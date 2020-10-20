@@ -2,9 +2,7 @@
 # @Date:   18-05-2020
 # @Email:  agurpidelash@irap.omp.eu
 # @Last modified by:   agurpide
-# @Last modified time: 19-10-2020
-
-
+# @Last modified time: 20-10-2020
 
 # Script to adjust the coordinates of a cube from an input image( Preferabley HST)
 # Created the 10/06/2019 by Andres Gurpide

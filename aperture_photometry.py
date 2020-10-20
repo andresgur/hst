@@ -38,14 +38,14 @@ for image_file in args.images:
         hst_hdul = fits.open(image_file)
         date = hst_hdul[0].header["DATE-OBS"]
         if "FILTER" in hst_hdul[0].header:
-            filter = hst_hdul[0].header["FILTER"]
+            hst_filter = hst_hdul[0].header["FILTER"]
         else:
-            filter = hst_hdul[0].header["FILTNAM1"]
+            hst_filter = hst_hdul[0].header["FILTNAM1"]
         instrument = hst_hdul[0].header["INSTRUME"]
         units = hst_hdul[1].header["BUNIT"]
         exp_time = float(hst_hdul[0].header["EXPTIME"])
         detector = hst_hdul[0].header["DETECTOR"]
-        pivot_wavelength = hst_hdul[0].header["PHOTPLAM"]
+        pivot_wavelength = float(hst_hdul[1].header["PHOTPLAM"])
         # if UV filter then https://www.stsci.edu/files/live/sites/www/files/home/hst/instrumentation/wfc3/documentation/instrument-science-reports-isrs/_documents/2017/WFC3-2017-14.pdf
         # use phftlam1 keyword for UV filters
         if detector == "UVIS" and filter == "F225W" or "F275W" or "F336W":
@@ -74,10 +74,13 @@ for image_file in args.images:
             phot_source["mag"] = -2.5 * log10(phot_source["corrected_aperture"] / args.aperture_correction / exp_time) + zero_point
             phot_source["mag_err"] = -2.5 * log10(phot_source["corrected_aperture_err"] / args.aperture_correction / exp_time) + zero_point
 
-        phot_source['flux'].info.format = '%.2E'
+        phot_source['flux'].info.format = '%.3E'
+        phot_source['flux_err'].info.format = '%.3E'
+        phot_source["mag"].info.format = "%.3f"
+        phot_source["mag_err"].info.format = "%.3f"
 
         phot_source.write("aperture_photometry.csv", overwrite=True)
-        f = open("%s" % (image_file.replace(".fits", "log")), "w+")
-        f.write("%s\n%s\n%s\n%.2f\t%s\n" % (date, filter, detector, exp_time, pivot_wavelength))
+        f = open("%s" % (image_file.replace(".fits", "_info.txt")), "w+")
+        f.write("Date:%s\nFilter:%s\nDetector:%s\nExposure(s):%.2f\nPivot wavelength (A):%.1f\n" % (date, hst_filter, detector, exp_time, pivot_wavelength))
         f.close()
         # print some useful info
