@@ -45,6 +45,7 @@ for image_file in args.images:
         units = hst_hdul[1].header["BUNIT"]
         exp_time = float(hst_hdul[0].header["EXPTIME"])
         detector = hst_hdul[0].header["DETECTOR"]
+        pivot_wavelength = hst_hdul[0].header["PHOTPLAM"]
         # if UV filter then https://www.stsci.edu/files/live/sites/www/files/home/hst/instrumentation/wfc3/documentation/instrument-science-reports-isrs/_documents/2017/WFC3-2017-14.pdf
         # use phftlam1 keyword for UV filters
         if detector == "UVIS" and filter == "F225W" or "F275W" or "F336W":
@@ -74,4 +75,9 @@ for image_file in args.images:
             phot_source["mag_err"] = -2.5 * log10(phot_source["corrected_aperture_err"] / args.aperture_correction / exp_time) + zero_point
 
         phot_source['flux'].info.format = '%.2E'
-        print(phot_source)
+
+        phot_source.write("aperture_photometry.csv", overwrite=True)
+        f = open("%s" % (image_file.replace(".fits", "log")), "w+")
+        f.write("%s\n%s\n%s\n%.2f\t%s\n" % (date, filter, detector, exp_time, pivot_wavelength))
+        f.close()
+        # print some useful info

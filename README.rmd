@@ -1,0 +1,3 @@
+Scripts to manipulate HST data.
+astro_corr.py will correct the WCS of the HST image
+aperture_photometry.py is meant to retrieve physical fluxes and magntiudes from point like sources
