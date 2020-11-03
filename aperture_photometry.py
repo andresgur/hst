@@ -66,7 +66,7 @@ for image_file in args.images:
         # background correction
         phot_source["corrected_aperture"] = phot_source["aperture_sum"] - phot_bkg["aperture_sum"] / bkg_aperture.area * source_aperture.area
         # divide by the exposure time if needed
-        phot_source["corrected_aperture_err"] = sqrt(phot_source["aperture_sum"] - (sqrt(phot_bkg["aperture_sum"]) / bkg_aperture.area * source_aperture.area) ** 2)
+        phot_source["corrected_aperture_err"] = sqrt(phot_source["aperture_sum"] + (sqrt(phot_bkg["aperture_sum"]) / bkg_aperture.area * source_aperture.area) ** 2)
         phot_source_conf = phot_source["corrected_aperture"] + phot_source["corrected_aperture_err"]
         if "/S" in units:
             print("Units: %s. Exposure time correction will not be applied" % units)
