@@ -17,6 +17,7 @@ import hst_utils as hst_ut
 import numpy as np
 from extinction import ccm89, remove
 import stsynphot as stsyn
+from synphot import Observation
 from astropy.time import Time
 
 parser = argparse.ArgumentParser(description='Extracts fluxes from the given apertures.')
@@ -48,7 +49,13 @@ for image_file in args.images:
             obsmode = "%s,%s,%s,%s,%s" % (keywords[0], keywords[1], keywords[2],  keywords[3], keywords[5])
         elif "WFC1" in obs_mode:
             obsmode = obs_mode.replace(" ", ",")
+        # add aperture radius for correction
+        obsmode += ",aper#%.2f" % source_reg.radius.to(u.arcsec).value
         bp = stsyn.band(obsmode)
+        # https://stsynphot.readthedocs.io/en/latest/stsynphot/tutorials.html calculate vega zero point
+        obs = Observation(stsyn.Vega, bp, binset=bp.binset)
+        vega_zpt = obs.effstim(flux_unit=(u.erg/u.cm**2/u.AA/u.s), area=stsyn.conf.area)
+        print(f'VEGAMAG zeropoint for {bp.obsmode} is {vega_zpt:.5f}')
         rect_width = bp.rectwidth()
         print(rect_width)
         units = hst_hdul[1].header["BUNIT"]
@@ -126,10 +133,19 @@ for image_file in args.images:
         phot_source["mag_err_neg"] = -2.5 * log10(phot_source_conf_pos) - zero_point - phot_source["mag"]
         phot_source["mag_err_pos"] = -2.5 * log10(phot_source_conf_neg) - zero_point - phot_source["mag"]
 
+        phot_source["vegamag"] = -2.5 * log10(phot_source[aperture_keyword]  * photflam.value /  vega_zpt.value)
+        phot_source["vegamag_err_neg"] = -2.5 * log10(phot_source_conf_pos  * photflam.value /  vega_zpt.value) - phot_source["vegamag"]
+        phot_source["vegamag_err_pos"] = -2.5 * log10(phot_source_conf_neg  * photflam.value /  vega_zpt.value) - phot_source["vegamag"]
+
         if args.av is not None:
             waves = np.array([pivot_wavelength])
             phot_source["der_flux"] = remove(ccm89(waves, args.av, 3.1, unit="aa"), phot_source[flux_header])
-            phot_source["der_flux_err"] = remove(ccm89(waves, args.av, 3.1, unit="aa"), phot_source_conf_pos* photflam ) - phot_source["der_flux"]
+            phot_source["der_flux_err"] = remove(ccm89(waves, args.av, 3.1, unit="aa"), phot_source_conf_pos * photflam) - phot_source["der_flux"]
+            phot_source["int_der_flux"] = phot_source["der_flux"]  * rect_width.value
+            phot_source["int_der_flux_err"] = remove(ccm89(waves, args.av, 3.1, unit="aa"), phot_source_conf_pos * photflam)  * rect_width.value - phot_source["int_der_flux"]
+            phot_source["dervegamag"] = -2.5 * log10(phot_source["der_flux"].value  /  vega_zpt.value )
+            phot_source["dervegamag_err_neg"] = -2.5 * log10((phot_source["der_flux"] + phot_source["der_flux_err"]).value /  vega_zpt.value) - phot_source["vegamag"]
+            phot_source["dervegamag_err_pos"] = -2.5 * log10((phot_source["der_flux"] - phot_source["der_flux_err"]).value /  vega_zpt.value) - phot_source["vegamag"]
 
         # formatting
         phot_source["xcenter"].info.format = '%.2f'
