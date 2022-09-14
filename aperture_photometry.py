@@ -21,13 +21,14 @@ from astropy.time import Time
 
 parser = argparse.ArgumentParser(description='Extracts fluxes from the given apertures.')
 parser.add_argument("images", help="Image files where to extract fluxes", nargs='+', type=str)
-parser.add_argument("-r", "--regions", type=str, help='Source (first) and background (second line, optional) extraction region file to use for the aperture photometry', nargs=1)
+parser.add_argument("-s", "--source", type=str, help='Source extraction region file to use for the aperture photometry', nargs=1)
+parser.add_argument("-b", "--background", type=str, help='Background extraction region file to use for the aperture photometry (optional)', nargs="?")
 parser.add_argument("-e", "--exclude", type=str, help='File with extraction regions to exclude from the source aperture photometry', nargs="?")
 parser.add_argument("--av", type=float, help='Extinction correction to obtain derredened fluxes', nargs="?")
 parser.add_argument("-a", "--aperture_correction", type=float, help='Aperture correction (see https://stsci.edu/hst/instrumentation/wfc3/data-analysis/photometric-calibration/uvis-encircled-energy and https://stsci.edu/hst/instrumentation/acs/data-analysis/aperture-corrections)', nargs="?", default=1)
 args = parser.parse_args()
-regions = Regons.read(args.regions[0], format="ds9")
-source_reg = regions[0]
+
+source_reg = Regions.read(args.source[0], format="ds9")[0]
 
 for image_file in args.images:
 
@@ -87,8 +88,8 @@ for image_file in args.images:
                 phot_source["aperture_sum"] -= phot_exclude["aperture_sum"]
 
         # if a background region was given
-        if len(regions) > 1:
-            bkg_reg = regions[1]
+        if args.background is not None:
+            bkg_reg = Regions.read(args.background, format="ds9")[0]
             bkg_aperture = hst_ut.region_to_aperture(bkg_reg, hst_wcs)
             phot_bkg = aperture_photometry(image_data, bkg_aperture, wcs=hst_wcs, error=np.sqrt(image_data * exp_time) / exp_time, mask=mask)
             phot_source[aperture_keyword] = (phot_source["aperture_sum"] - phot_bkg["aperture_sum"] / bkg_aperture.area * source_area) / args.aperture_correction
@@ -141,7 +142,7 @@ for image_file in args.images:
         phot_source["mag"].info.format = "%.2f"
         phot_source["mag_err_neg"].info.format = "%.2f"
         phot_source["mag_err_pos"].info.format = "%.3f"
-        reg_basename = os.path.basename(args.regions[0]).replace('.reg', '')
+        reg_basename = os.path.basename(args.source[0]).replace('.reg', '')
         out_data_file = "aperture_phot_%s_%s.csv" % (hst_filter, reg_basename)
         phot_source.write(out_data_file, overwrite=True)
         out_info_file = image_file.replace(".fits", "%s_apt_info.txt" % reg_basename)
