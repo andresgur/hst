@@ -139,7 +139,7 @@ if os.path.isfile(image_file):
                   args.radius[0]))
     outfile.write("%.4f\t%.3f\tinf\n" % ((mean_corr_factor / to_inf), (err_corr_factor/ to_inf)))
     to_input_radius = get_aperture_correction(obs_mode, hst_filter, args.radius[0])
-    outfile.write("#%.3f\t_\t%d" % (to_input_radius, args.radius[0])
+    outfile.write("#%.3f\t_\t%d\n" % (to_input_radius, args.radius[0]))
     [outfile.write("#%.3f\t%s\n" % (corr_factor, reg_file.meta["text"])) for corr_factor, reg_file in zip(corr_factors, star_regs)]
     outfile.close()
 
