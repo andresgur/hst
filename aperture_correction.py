@@ -16,16 +16,53 @@ import hst_utils as hst_ut
 import numpy as np
 from photutils.centroids import centroid_2dg
 from astropy.visualization import simple_norm
+import glob
+
+def get_aperture_correction(obs_mode, hst_filter, radius):
+    """Parameters
+        ---------
+        radius: pixel
+    """
+
+    if "HRC" in obs_mode and "ACS" in obs_mode:
+        table = np.genfromtxt("%s/acs_hrc_ee_table.dat" % args.dir, names=True, skip_header=3)
+        corrections = table["%d" % radius]
+    if "UVIS2" in obs_mode:
+        table = np.genfromtxt("%s/wfc3uvis2_aper_007_syn.csv" % args.dir, names=True, delimiter=",",
+                              dtype=("S6, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8"
+                                    ", f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8"
+                                    "f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8"), deletechars="")
+        corrections = table["APER#%.2f" % (radius * 0.04)]
+    elif "UVIS1" in obs_mode:
+        table = np.genfromtxt("%s/wfc3uvis1_aper_007_syn.csv"  % args.dir, names=True, delimiter=",",
+                      dtype=("S6, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8"
+                            ", f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8"
+                            "f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8"), deletechars="")
+
+        corrections = table["APER%.2f" % (radius * 0.04)]
+    elif "WFC" in obs_mode and "ACS" in obs_mode:
+        table = np.genfromtxt("%s/acs_wfc_ee_table.dat" % args.dir, skip_header=3, names=True,
+                              dtype=("S10, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8"))
+        corrections = table["%d" % radius]
+    hst_filters = np.char.decode(table["FILTER"])
+    index = np.where(hst_filters == hst_filter)[0]
+    aperture_correction = corrections[index]
+    if not aperture_correction:
+        raise ValueError("Filter %s not found!" % hst_filter)
+    print("Aperture correction found for obsmode:%s and r=%d: %.3f" % (obs_mode, radius, aperture_correction))
+    return aperture_correction
 
 
-
-parser = argparse.ArgumentParser(description='Determines the aperture correction by extracting count rates from various stars in the field.')
+parser = argparse.ArgumentParser(description='Determines the aperture correction at 10 pixels by extracting count rates from various stars in the field. For HRC and WFC "inifinite" aperture is defined to be 5.5 arcsec')
 parser.add_argument("image", help="Image for which the aperture correction is to be determined", nargs=1, type=str)
-parser.add_argument("-r", "--regions", type=str, help='Regions enclosing some stars for aperture correction determination', nargs=1)
+parser.add_argument("--regions", type=str, help='Regions enclosing some stars for aperture correction determination', nargs=1)
+parser.add_argument("-r", "--radius", type=float,
+                    help='The radius for which the aperture correction is to be determined', nargs=1)
+parser.add_argument("-d", "--dir", help="Directory with the stsci EE files", default="%s/scripts/pythonscripts/hst" % os.getenv("HOME"))
 args = parser.parse_args()
 
-star_regs = Regions.read(args.regions[0], format="ds9")
 
+star_regs = Regions.read(args.regions[0], format="ds9")
 image_file = args.image[0]
 
 radii = np.arange(2, 15, 1)
@@ -33,6 +70,20 @@ radii = np.arange(2, 15, 1)
 if os.path.isfile(image_file):
     hst_hdul = fits.open(image_file)
     pixel_size = hst_hdul[0].header["D001SCAL"] # in arcseconds
+    obs_mode = hst_hdul[1].header["PHOTMODE"]
+    if "WFC3" in obs_mode:
+        keywords = obs_mode.split(" ")
+        obsmode = "%s,%s,%s,mjd#%.2f" % (keywords[0], keywords[1], keywords[2], obsdate)
+    elif "WFC2" in obs_mode:
+        keywords = obs_mode.split(",")
+        #['WFPC2', '1', 'A2D7', 'F656N', '', 'CAL']
+        obsmode = "%s,%s,%s,%s,%s" % (keywords[0], keywords[1], keywords[2],  keywords[3], keywords[5])
+    elif "WFC1" in obs_mode:
+        keywords = obs_mode.split(" ")
+        obsmode = "%s,%s,%s,%s" % (keywords[0], keywords[1], keywords[2],  keywords[3])
+    hst_filter = keywords[2]
+    detector = hst_hdul[0].header["DETECTOR"]
+    obs_mode = hst_hdul[1].header["PHOTMODE"]
     image_data = hst_hdul[1].data
     norm = simple_norm(image_data, 'linear', percent=99)
     hst_wcs = wcs.WCS(hst_hdul[1].header)
@@ -59,6 +110,38 @@ if os.path.isfile(image_file):
         outfile = reg.meta["text"].replace(" ", "").strip()
         plt.savefig(outfile + ".png", dpi=200)
         plt.close(fig)
-        file = open(outfile + ".dat", "w+")
+        file = open("apt_corr_" +  outfile + ".dat", "w+")
         file.write(outputs)
         file.close()
+
+    outfiles = glob.glob("apt_corr*.dat")
+
+    radii = np.genfromtxt(outfiles[0], names=True)["r"]
+
+    target_radius = np.argmin(np.abs(radii - args.radius[0]))
+
+    default_radius = 10
+
+    large_radii = np.argmin(np.abs(radii - default_radius))
+
+    counts_at_target = np.array([np.genfromtxt(outfile, names=True)["counts"][target_radius] for outfile in outfiles])
+
+    counts_at_large = np.array([np.genfromtxt(outfile, names=True)["counts"][large_radii] for outfile in outfiles])
+
+    corr_factors = counts_at_target / counts_at_large
+    mean_corr_factor =  np.mean(corr_factors)
+    samples = len(outfiles)
+    err_corr_factor = np.std(corr_factors) / np.sqrt(samples)
+    to_inf = get_aperture_correction(obs_mode, hst_filter, default_radius)
+
+    outfile = open("aperture_correction.dat", "w+")
+    outfile.write("#mean\terr\tr\n%.4f\t%.3f\t%.1f\n" % (mean_corr_factor, err_corr_factor,
+                  args.radius[0]))
+    outfile.write("%.4f\t%.3f\tinf\n" % ((mean_corr_factor / to_inf), (err_corr_factor/ to_inf)))
+    to_input_radius = get_aperture_correction(obs_mode, hst_filter, args.radius[0])
+    outfile.write("#%.3f\t_\t%d" % (to_input_radius, args.radius[0])
+    [outfile.write("#%.3f\t%s\n" % (corr_factor, reg_file.meta["text"])) for corr_factor, reg_file in zip(corr_factors, star_regs)]
+    outfile.close()
+
+    print("Mean aperture correction factor from %d to %d pixels: %.2f+-%.2f" % (args.radius[0],
+         default_radius, mean_corr_factor, err_corr_factor))
