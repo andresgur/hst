@@ -22,6 +22,7 @@ from extinction import ccm89, remove
 import stsynphot as stsyn
 from synphot import Observation
 from astropy.time import Time
+import warnings
 from photutils.centroids import centroid_2dg
 
 parser = argparse.ArgumentParser(description='Extracts fluxes from the given apertures.')
@@ -40,7 +41,6 @@ args = parser.parse_args()
 source_reg = Regions.read(args.source[0], format="ds9")[0]
 
 for image_file in args.images:
-
     if os.path.isfile(image_file):
         hst_hdul = fits.open(image_file)
         date = hst_hdul[0].header["DATE-OBS"]
@@ -91,11 +91,13 @@ for image_file in args.images:
         hst_wcs = wcs.WCS(hst_hdul[1].header)
         source_aperture = hst_ut.region_to_aperture(source_reg, hst_wcs)
         src_mask = source_aperture.to_mask()
-        mask_image = src_mask.to_image(image_data.shape)
+        cutout = src_mask.cutout(image_data)
+        err_cutout = src_mask.cutout(np.sqrt(image_data * exp_time) / exp_time)
+        #mask_image = src_mask.to_image(image_data.shape)
         print("Refining source centroid...")
-        src_x, src_y = centroid_2dg(image_data,
-                                    np.sqrt(image_data * exp_time) / exp_time,
-                                    mask=~mask_image.astype(bool))
+        x_cut, y_cut = centroid_2dg(cutout, error=err_cutout)
+        # convert to image coordinates
+        src_x, src_y = x_cut + source_aperture.bbox.ixmin, y_cut + source_aperture.bbox.iymin
         mask = image_data < 0
         # use the same radius but now the source is centered
         source_aperture = CircularAperture([src_x, src_y], source_aperture.r)
@@ -253,3 +255,5 @@ for image_file in args.images:
         print("Output stored to %s and %s" % (out_info_file, out_data_file))
         #
         # print some useful info
+    else:
+        warnings.warn("File %s not found, skipping it")
