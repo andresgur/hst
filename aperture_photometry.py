@@ -25,12 +25,14 @@ from astropy.time import Time
 import warnings
 from photutils.centroids import centroid_2dg
 
+Rv = 3.1
+
 parser = argparse.ArgumentParser(description='Extracts fluxes from the given apertures.')
 parser.add_argument("images", help="Image files where to extract fluxes", nargs='+', type=str)
 parser.add_argument("-s", "--source", type=str, help='Source extraction region file to use for the aperture photometry', nargs=1)
 parser.add_argument("-b", "--background", type=str, help='Background extraction region file to use for the aperture photometry (optional)', nargs="?")
 parser.add_argument("-e", "--exclude", type=str, help='File with extraction regions to exclude from the source aperture photometry', nargs="?")
-parser.add_argument("--av", type=float, help='Extinction correction to obtain derredened fluxes', nargs="?")
+parser.add_argument("--av", type=float, help='Extinction correction to obtain derredened fluxes. Uses Cardelli+89 and Rv=3.1', nargs="?")
 parser.add_argument("-a", "--aperture_correction", type=float,
                     help='Aperture correction (see https://stsci.edu/hst/instrumentation/wfc3/data-analysis/photometric-calibration/uvis-encircled-energy and https://stsci.edu/hst/instrumentation/acs/data-analysis/aperture-corrections)',
                     nargs="?", default=1)
@@ -55,7 +57,7 @@ for image_file in args.images:
             keywords = obs_mode.split(",")
             #['WFPC2', '1', 'A2D7', 'F656N', '', 'CAL']
             obsmode = "%s,%s,%s,%s,%s" % (keywords[0], keywords[1], keywords[2],  keywords[3], keywords[5])
-        elif "WFC1" in obs_mode:
+        elif "WFC1" in obs_mode or "HRC" in obs_mode:
             keywords = obs_mode.split(" ")
             obsmode = "%s,%s,%s,%s" % (keywords[0], keywords[1], keywords[2],  keywords[3])
         hst_filter = keywords[2]
@@ -93,9 +95,9 @@ for image_file in args.images:
         src_mask = source_aperture.to_mask()
         cutout = src_mask.cutout(image_data)
         err_cutout = src_mask.cutout(np.sqrt(image_data * exp_time) / exp_time)
-        #mask_image = src_mask.to_image(image_data.shape)
+        mask_cutout = cutout <=0
         print("Refining source centroid...")
-        x_cut, y_cut = centroid_2dg(cutout, error=err_cutout)
+        x_cut, y_cut = centroid_2dg(cutout, error=err_cutout, mask=mask_cutout)
         # convert to image coordinates
         src_x, src_y = x_cut + source_aperture.bbox.ixmin, y_cut + source_aperture.bbox.iymin
         mask = image_data < 0
@@ -205,13 +207,24 @@ for image_file in args.images:
 
         if args.av is not None:
             waves = np.array([pivot_wavelength])
-            phot_source["der_flux"] = remove(ccm89(waves, args.av, 3.1, unit="aa"), phot_source[flux_header])
-            phot_source["der_flux_err"] = remove(ccm89(waves, args.av, 3.1, unit="aa"), phot_source_conf_pos * photflam) - phot_source["der_flux"]
+            phot_source["der_flux"] = remove(ccm89(waves, args.av, Rv, unit="aa"), phot_source[flux_header])
+            phot_source["der_flux_err"] = remove(ccm89(waves, args.av, Rv, unit="aa"), phot_source_conf_pos * photflam) - phot_source["der_flux"]
+            phot_source['der_flux'].info.format = '%.2E'
+            phot_source['der_flux_err'].info.format = '%.2E'
             phot_source["int_der_flux"] = phot_source["der_flux"]  * rect_width.value
-            phot_source["int_der_flux_err"] = remove(ccm89(waves, args.av, 3.1, unit="aa"), phot_source_conf_pos * photflam)  * rect_width.value - phot_source["int_der_flux"]
+            phot_source["int_der_flux_err"] = remove(ccm89(waves, args.av, Rv, unit="aa"), phot_source_conf_pos * photflam)  * rect_width.value - phot_source["int_der_flux"]
             phot_source["dervegamag"] = -2.5 * log10(phot_source["der_flux"].value  /  vega_zpt.value )
             phot_source["dervegamag_err_neg"] = -2.5 * log10((phot_source["der_flux"] + phot_source["der_flux_err"]).value /  vega_zpt.value) - phot_source["vegamag"]
             phot_source["dervegamag_err_pos"] = -2.5 * log10((phot_source["der_flux"] - phot_source["der_flux_err"]).value /  vega_zpt.value) - phot_source["vegamag"]
+            phot_source["derstmag"] = -2.5 * log10(phot_source["der_flux"].value) - 21.1
+            phot_source["derstmag_err_neg"] = -2.5 * log10(phot_source["der_flux"].value) - 21.1 - phot_source["stmag"]
+            phot_source["derstmag_err_pos"] = -2.5 * log10(phot_source["der_flux"].value) - 21.1 - phot_source["stmag"]
+            phot_source["dervegamag"].info.format = "%.2f"
+            phot_source["dervegamag_err_neg"].info.format = "%.2f"
+            phot_source["dervegamag_err_pos"].info.format = "%.3f"
+            phot_source["derstmag"].info.format = "%.2f"
+            phot_source["derstmag_err_neg"].info.format = "%.2f"
+            phot_source["derstmag_err_pos"].info.format = "%.3f"
 
         # formatting
         phot_source["xcenter"].info.format = '%.2f'
