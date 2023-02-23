@@ -9,7 +9,7 @@ from regions import Regions
 from photutils.aperture import aperture_photometry, ApertureStats, CircularAperture
 from astropy.io import fits
 import argparse
-from astropy.stats import SigmaClip
+from astropy.time import Time
 import matplotlib.pyplot as plt
 from astropy import wcs
 import hst_utils as hst_ut
@@ -28,16 +28,17 @@ def get_aperture_correction(obs_mode, hst_filter, radius):
         table = np.genfromtxt("%s/acs_hrc_ee_table.dat" % args.dir, names=True, skip_header=3,
                                 dtype=("S6, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8"))
         corrections = table["%d" % radius]
-    if "UVIS2" in obs_mode:
-        table = np.genfromtxt("%s/wfc3uvis2_aper_007_syn.csv" % args.dir, names=True, delimiter=",",
-                              dtype=("S6, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8"
-                                    ", f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8"
-                                    "f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8"), deletechars="")
-        corrections = table["APER#%.2f" % (radius * 0.04)]
+    elif "UVIS2" in obs_mode:
+        table = np.genfromtxt("%s/wfc3uvis2_aper_007_syn.csv"  % args.dir, names=True, delimiter=",",
+                      dtype=("S6, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8"
+                            ", f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8,"
+                            "f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8"), deletechars="")
+
+        corrections = table["APER%.2f" % (radius * 0.04)]
     elif "UVIS1" in obs_mode:
         table = np.genfromtxt("%s/wfc3uvis1_aper_007_syn.csv"  % args.dir, names=True, delimiter=",",
                       dtype=("S6, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8"
-                            ", f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8"
+                            ", f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8,"
                             "f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8, f8"), deletechars="")
 
         corrections = table["APER%.2f" % (radius * 0.04)]
@@ -70,6 +71,8 @@ radii = np.arange(2, 15, 0.5)
 
 if os.path.isfile(image_file):
     hst_hdul = fits.open(image_file)
+    date = hst_hdul[0].header["DATE-OBS"]
+    obsdate = Time(date).mjd
     pixel_size = hst_hdul[0].header["D001SCAL"] # in arcseconds
     obs_mode = hst_hdul[1].header["PHOTMODE"]
     if "WFC3" in obs_mode:
@@ -82,16 +85,23 @@ if os.path.isfile(image_file):
     elif "WFC1" in obs_mode or "HRC" in obs_mode:
         keywords = obs_mode.split(" ")
         obsmode = "%s,%s,%s,%s" % (keywords[0], keywords[1], keywords[2],  keywords[3])
+    print("Obs mode %s" % obsmode)
     hst_filter = keywords[2]
     detector = hst_hdul[0].header["DETECTOR"]
     obs_mode = hst_hdul[1].header["PHOTMODE"]
     exp_time = float(hst_hdul[0].header["EXPTIME"])
+    units = hst_hdul[1].header["BUNIT"]
+    # divide by the exposure time if needed
+    if "/S" not in units:
+        print("Units: %s. Applying exposure time correction" % units)
+        image_data /= exp_time
     image_data = hst_hdul[1].data
     norm = simple_norm(image_data, 'linear', percent=99)
     hst_wcs = wcs.WCS(hst_hdul[1].header)
     fig_psf, ax_psf = plt.subplots()
     ax_psf.set_ylabel("Normalized Counts")
     ax_psf.set_xlabel("r (pixels)")
+
     for reg in star_regs:
         star_aperture = hst_ut.region_to_aperture(reg, hst_wcs)
         mask = star_aperture.to_mask()
@@ -104,7 +114,7 @@ if os.path.isfile(image_file):
         x_cut, y_cut = centroid_2dg(cutout, error=err_cutout, mask=mask_cutout)
         # convert to image coordinates
         x, y = x_cut + star_aperture.bbox.ixmin, y_cut + star_aperture.bbox.iymin
-        outputs = "#r\tarcsec\tcounts\n"
+        outputs = "#r\tarcsec\tcounts\terr\n"
         fig, ax = plt.subplots(1 , subplot_kw={'projection': hst_wcs})
         ax.imshow(image_data, norm=norm, interpolation='nearest', cmap="cividis")
         ax.scatter(x, y, marker="x", color="red", lw=0.5)
@@ -113,26 +123,25 @@ if os.path.isfile(image_file):
 
         line = None
         apertures = [CircularAperture([x, y], r=r) for r in radii]
-        apt_phots = aperture_photometry(image_data, apertures)
-        total_counts = [apt_phots["aperture_sum_%d" % i] for i, aperture in enumerate(apertures)]
+        apt_phots = aperture_photometry(image_data * exp_time, apertures)
+        total_counts = np.array([apt_phots["aperture_sum_%d" % i][0] for i, aperture in enumerate(apertures)])
 
         [aperture.plot(color="white", lw=0.5) for aperture in apertures]
         index = np.argmin(np.abs(radii - default_radius))
         # plot the target aperture
         apertures[index].plot(color="magenta", lw=0.5, label="r=%d pixels" % default_radius)
-        ax_psf.plot(radii, total_counts / max(total_counts), label=reg.meta["text"])
+        ax_psf.errorbar(radii, total_counts / max(total_counts), yerr=np.sqrt(total_counts) / max(total_counts), label=reg.meta["text"])
 
-        for r, counts in zip(radii, total_counts):
-            #TODO improve this
-            outputs += "%.2f\t%.2f\t%.5f\n" % (r, r * pixel_size, counts)
+        # save results
+        outputs = np.array([radii, radii*pixel_size, total_counts, np.sqrt(total_counts)])
+        outfile = reg.meta["text"].replace(" ", "").strip()
+        np.savetxt("apt_corr_" +  outfile + ".dat", outputs.T, header="#r\tarcsec\tcounts\terr",
+                   delimiter="\t", fmt="%.2f\t%.2f\t%.1f\t%.1f")
 
         ax.legend()
-        outfile = reg.meta["text"].replace(" ", "").strip()
+
         fig.savefig(outfile + ".png", dpi=200)
         plt.close(fig)
-        file = open("apt_corr_" +  outfile + ".dat", "w+")
-        file.write(outputs)
-        file.close()
 
     ax_psf.legend()
     fig_psf.savefig("psf.png", dpi=200)
@@ -144,16 +153,21 @@ if os.path.isfile(image_file):
 
     default_radius = 10
 
-    large_radii = np.argmin(np.abs(radii - default_radius))
+    large_radius = np.argmin(np.abs(radii - default_radius))
+
+    samples = len(out_apt_files)
 
     counts_at_target = np.array([np.genfromtxt("apt_corr_" + reg.meta["text"].replace(" ", "").strip() + ".dat" , names=True)["counts"][target_radius] for reg in star_regs])
+    err_counts_at_target = np.sum(np.array([np.genfromtxt("apt_corr_" + reg.meta["text"].replace(" ", "").strip() + ".dat" , names=True)["err"][target_radius]  for reg in star_regs]))
 
-    counts_at_large = np.array([np.genfromtxt("apt_corr_" + reg.meta["text"].replace(" ", "").strip() + ".dat", names=True)["counts"][large_radii] for reg in star_regs])
+    counts_at_large = np.array([np.genfromtxt("apt_corr_" + reg.meta["text"].replace(" ", "").strip() + ".dat", names=True)["counts"][large_radius] for reg in star_regs])
+    err_counts_at_large = np.sum(np.array([np.genfromtxt("apt_corr_" + reg.meta["text"].replace(" ", "").strip() + ".dat" , names=True)["err"][large_radius] for reg in star_regs]))
 
     corr_factors = counts_at_target / counts_at_large
+    err_corr_factors = np.sqrt((err_counts_at_target / counts_at_large)**2 + (err_counts_at_large * counts_at_target / counts_at_large**2)**2)
     mean_corr_factor =  np.mean(corr_factors)
-    samples = len(out_apt_files)
-    err_corr_factor = np.std(corr_factors) / np.sqrt(samples)
+
+    err_corr_factor = np.sqrt(np.sum(err_corr_factors**2)) / samples
     to_inf = get_aperture_correction(obs_mode, hst_filter, default_radius)
 
     outfile = open("aperture_correction.dat", "w+")

@@ -24,6 +24,13 @@ from synphot import Observation
 from astropy.time import Time
 import warnings
 from photutils.centroids import centroid_2dg
+import subprocess
+
+def stmag(flux, zeropint=-21.1):
+    """Returns the ST magnitude as defined in https://hst-docs.stsci.edu/acsdhb/chapter-5-acs-data-analysis/5-1-photometry"""
+    return -2.5 * np.log10(flux) + zeropint
+
+
 
 Rv = 3.1
 
@@ -67,7 +74,7 @@ for image_file in args.images:
         # https://stsynphot.readthedocs.io/en/latest/stsynphot/tutorials.html calculate vega zero point
         obs = Observation(stsyn.Vega, bp, binset=bp.binset)
         vega_zpt = obs.effstim(flux_unit=(u.erg/u.cm**2/u.AA/u.s), area=stsyn.conf.area)
-        print(f'VEGAMAG zeropoint for {bp.obsmode} is {vega_zpt:.5f}')
+        print(f'VEGAMAG zeropoint for {bp.obsmode} is {vega_zpt:.5E}')
         rect_width = bp.rectwidth()
         units = hst_hdul[1].header["BUNIT"]
         exp_time = float(hst_hdul[0].header["EXPTIME"])
@@ -88,8 +95,12 @@ for image_file in args.images:
         print("PHOTFLAM keyword value: %.2E %s" % (photflam.value, photflam.unit))
         zero_point = float(hst_hdul[1].header["PHOTZPT"])
 
-
         image_data = hst_hdul[1].data
+        # divide by the exposure time if needed
+        if "/S" not in units:
+            print("Units: %s. Applying exposure time correction" % units)
+            image_data /= exp_time
+            units += "/S"
         hst_wcs = wcs.WCS(hst_hdul[1].header)
         source_aperture = hst_ut.region_to_aperture(source_reg, hst_wcs)
         src_mask = source_aperture.to_mask()
@@ -127,7 +138,8 @@ for image_file in args.images:
             for exclude_reg in Regions.read(args.exclude, format="ds9"):
                 exclude_aperture = hst_ut.region_to_aperture(exclude_reg, hst_wcs)
                 phot_exclude = aperture_photometry(image_data, exclude_aperture,
-                                                   wcs=hst_wcs, error=np.sqrt(image_data * exp_time) / exp_time, mask=mask)
+                                                   wcs=hst_wcs, error=np.sqrt(image_data * exp_time) / exp_time,
+                                                   mask=mask)
                 source_area  -= exclude_aperture.area
                 phot_source["aperture_sum_err"] = np.sqrt(phot_exclude["aperture_sum_err"] ** 2 + phot_source["aperture_sum_err"] ** 2)
                 phot_source["aperture_sum"] -= phot_exclude["aperture_sum"]
@@ -135,7 +147,7 @@ for image_file in args.images:
         # if a background region was given
         if args.background is not None:
             bkg_reg = Regions.read(args.background, format="ds9")[0]
-            sigma = 5
+            sigma = 4
             sigclip = SigmaClip(sigma=sigma, maxiters=10)
             bkg_aperture = hst_ut.region_to_aperture(bkg_reg, hst_wcs)
             phot_bkg = ApertureStats(image_data, bkg_aperture, sigma_clip=sigclip,
@@ -173,12 +185,6 @@ for image_file in args.images:
         phot_source_conf_pos = phot_source[aperture_keyword] + phot_source["corrected_aperture_err"]
         phot_source_conf_neg = phot_source[aperture_keyword] - phot_source["corrected_aperture_err"]
 
-        # divide by the exposure time if needed
-        if "/S" not in units:
-            print("Units: %s. Applying exposure time correction" % units)
-            counts_at_infinity /= exp_time
-            counts_at_infinity_conf /= exp_time
-            counts_at_infinity_neg /= exp_time
 
         flux_header = "flux(%s)" % photflam.unit
         flux_density = phot_source[aperture_keyword] * photflam
@@ -193,17 +199,17 @@ for image_file in args.images:
         phot_source[line_flux] = phot_source[aperture_keyword] * bp.emflx(bp.area)
         phot_source["monochromatic_flux_err"] = phot_source_conf_pos * bp.emflx(bp.area) - phot_source[line_flux]
         #https://www.stsci.edu/hst/instrumentation/acs/data-analysis/zeropoints
-        phot_source["acsmag"] = -2.5 * log10(phot_source[aperture_keyword]) - zero_point # in e/s
-        phot_source["acsmag_err_neg"] = -2.5 * log10(phot_source_conf_pos) - zero_point - phot_source["acsmag"]
-        phot_source["acsmag_err_pos"] = -2.5 * log10(phot_source_conf_neg) - zero_point - phot_source["acsmag"]
+        # be careful as the ZP is simply -21.1, the zeropoint for ACS needs to be computed
+        ##phot_source["acsmag"] = -2.5 * log10(phot_source[aperture_keyword]) - zero_point # in e/s
+        ##phot_source["acsmag_err_pos"] = -2.5 * log10(phot_source_conf_pos) - zero_point - phot_source["acsmag"]
+        ##phot_source["acsmag_err_neg"] = phot_source["acsmag"] - (-2.5 * log10(phot_source_conf_neg) - zero_point)
 
         phot_source["vegamag"] = -2.5 * log10(flux_density.value /  vega_zpt.value)
-        phot_source["vegamag_err_neg"] = -2.5 * log10(phot_source_conf_pos  * photflam.value /  vega_zpt.value) - phot_source["vegamag"]
-        phot_source["vegamag_err_pos"] = -2.5 * log10(phot_source_conf_neg  * photflam.value /  vega_zpt.value) - phot_source["vegamag"]
+        # this follows from error propagation
+        phot_source["vegamag_err"] = phot_source["flux_err"] / (flux_density.value * np.log(10))
 
-        phot_source["stmag"] = -2.5 * log10(flux_density.value) - 21.1 # it is defined like this for all filters (see https://hst-docs.stsci.edu/acsdhb/chapter-5-acs-data-analysis/5-1-photometry)
-        phot_source["stmag_err_neg"] = -2.5 * log10(phot_source_conf_pos  * photflam.value) - 21.1 - phot_source["stmag"]
-        phot_source["stmag_err_pos"] = -2.5 * log10(phot_source_conf_neg  * photflam.value) - 21.1 - phot_source["stmag"]
+        phot_source["stmag"] = stmag(flux_density.value)
+        phot_source["stmag_err"] = phot_source["flux_err"] / (flux_density.value * np.log(10))
 
         if args.av is not None:
             waves = np.array([pivot_wavelength])
@@ -214,17 +220,14 @@ for image_file in args.images:
             phot_source["int_der_flux"] = phot_source["der_flux"]  * rect_width.value
             phot_source["int_der_flux_err"] = remove(ccm89(waves, args.av, Rv, unit="aa"), phot_source_conf_pos * photflam)  * rect_width.value - phot_source["int_der_flux"]
             phot_source["dervegamag"] = -2.5 * log10(phot_source["der_flux"].value  /  vega_zpt.value )
-            phot_source["dervegamag_err_neg"] = -2.5 * log10((phot_source["der_flux"] + phot_source["der_flux_err"]).value /  vega_zpt.value) - phot_source["vegamag"]
-            phot_source["dervegamag_err_pos"] = -2.5 * log10((phot_source["der_flux"] - phot_source["der_flux_err"]).value /  vega_zpt.value) - phot_source["vegamag"]
-            phot_source["derstmag"] = -2.5 * log10(phot_source["der_flux"].value) - 21.1
-            phot_source["derstmag_err_neg"] = -2.5 * log10(phot_source["der_flux"].value) - 21.1 - phot_source["stmag"]
-            phot_source["derstmag_err_pos"] = -2.5 * log10(phot_source["der_flux"].value) - 21.1 - phot_source["stmag"]
-            phot_source["dervegamag"].info.format = "%.2f"
-            phot_source["dervegamag_err_neg"].info.format = "%.2f"
-            phot_source["dervegamag_err_pos"].info.format = "%.3f"
-            phot_source["derstmag"].info.format = "%.2f"
-            phot_source["derstmag_err_neg"].info.format = "%.2f"
-            phot_source["derstmag_err_pos"].info.format = "%.3f"
+            # negative and positive errors become swapped
+            phot_source["dervegamag_err"] = phot_source["der_flux_err"] / (phot_source["der_flux"] * np.log(10))
+            phot_source["derstmag"] = stmag(phot_source["der_flux"].value)
+            phot_source["derstmag_err"] = phot_source["der_flux_err"] / (phot_source["der_flux"] * np.log(10))
+            phot_source["dervegamag"].info.format = "%.3f"
+            phot_source["dervegamag_err"].info.format = "%.3f"
+            phot_source["derstmag"].info.format = "%.3f"
+            phot_source["derstmag_err"].info.format = "%.3f"
 
         # formatting
         phot_source["xcenter"].info.format = '%.2f'
@@ -238,33 +241,35 @@ for image_file in args.images:
         phot_source[flux_bp].info.format = "%.3E"
         phot_source["int_flux_err"].info.format = "%.2E"
         phot_source[line_flux].info.format = "%.3E"
-        phot_source["acsmag"].info.format = "%.2f"
-        phot_source["acsmag_err_neg"].info.format = "%.2f"
-        phot_source["acsmag_err_pos"].info.format = "%.3f"
-        phot_source["vegamag"].info.format = "%.2f"
-        phot_source["vegamag_err_neg"].info.format = "%.2f"
-        phot_source["vegamag_err_pos"].info.format = "%.3f"
+        # be careful as the ZP is simply -21.1, the zeropoint for ACS needs to be computed
+        #phot_source["acsmag"].info.format = "%.2f"
+        #phot_source["acsmag_err_neg"].info.format = "%.2f"
+        #phot_source["acsmag_err_pos"].info.format = "%.3f"
+        phot_source["vegamag"].info.format = "%.3f"
+        phot_source["vegamag_err"].info.format = "%.3f"
         phot_source["stmag"].info.format = "%.2f"
-        phot_source["stmag_err_neg"].info.format = "%.2f"
-        phot_source["stmag_err_pos"].info.format = "%.3f"
+        phot_source["stmag_err"].info.format = "%.3f"
 
         reg_basename = os.path.basename(args.source[0]).replace('.reg', '')
         out_data_file = "aperture_phot_%s_%s.csv" % (hst_filter, reg_basename)
-        phot_source.write(out_data_file, overwrite=True)
+        phot_source.write(out_data_file, overwrite=True,
+                         format="ascii.commented_header", delimiter=",")
         out_info_file = image_file.replace(".fits", "%s_apt_info.txt" % reg_basename)
         f = open(out_info_file, "w+")
         f.write("Date:%s\nInstrument:%s\nFilter:%s\nDetector:%s\nExposure(s):%.2f\nPivot wavelength (A):%.1f\nRMS:%.1f\nPHOTFLAM:%s\nAperture correction:%.4f" % (date, instrument, hst_filter, detector, exp_time, pivot_wavelength, filter_bandwidth, photflam.value, args.aperture_correction))
         aperture_reg = type(source_aperture).__name__
         attributes = vars(source_aperture)
         att_list = ''.join("%s: %s" % item for item in attributes.items())
-        f.write("\n###Aperture details###\n%s\n%s" % (aperture_reg, att_list))
+        f.write("\n###Aperture details###\n%s\n%s\n#XSPEC command\n" % (aperture_reg, att_list))
+        xspec_outfile = "xspec_" + image_file.replace(".fits", ".txt")
+        f.write("ftflx2xsp infile=%s xunit=angstrom yunit=ergs/cm^2/s/A nspec=1 phafile=hst_%s.fits rspfile=hst_%s.rsp"% (xspec_outfile, hst_filter, hst_filter))
         f.close()
-        xspec_outfile = image_file.replace(".fits", "_to_xspec.ascii")
+
         f = open("%s" % ("%s" % xspec_outfile), "w+")
-        f.write("%.2f %.2f %.3e %.3e" % (pivot_wavelength - filter_bandwidth / 2, pivot_wavelength + filter_bandwidth / 2, phot_source[flux_header].value, phot_source['flux_err'].value))
+        f.write("%.2f %.2f %.3e %.3e\n" % (pivot_wavelength - filter_bandwidth / 2, pivot_wavelength + filter_bandwidth / 2, phot_source[flux_header].value, phot_source['flux_err'].value))
         f.close()
+
         print("Use 'ftflx2xsp infile=%s xunit=angstrom yunit=ergs/cm^2/s/A nspec=1 phafile=hst_%s.fits rspfile=hst_%s.rsp' to convert to XSPEC format" % (xspec_outfile, hst_filter, hst_filter))
-        print("Warning: you may need to change the '-' sign in the ascii file for this to work")
         print("Output stored to %s and %s" % (out_info_file, out_data_file))
         #
         # print some useful info
