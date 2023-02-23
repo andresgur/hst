@@ -206,10 +206,10 @@ for image_file in args.images:
 
         phot_source["vegamag"] = -2.5 * log10(flux_density.value /  vega_zpt.value)
         # this follows from error propagation
-        phot_source["vegamag_err"] = phot_source["flux_err"] / (flux_density.value * np.log(10))
+        phot_source["vegamag_err"] = 2.5 * phot_source["flux_err"] / (flux_density.value * np.log(10))
 
         phot_source["stmag"] = stmag(flux_density.value)
-        phot_source["stmag_err"] = phot_source["flux_err"] / (flux_density.value * np.log(10))
+        phot_source["stmag_err"] = 2.5 * phot_source["flux_err"] / (flux_density.value * np.log(10))
 
         if args.av is not None:
             waves = np.array([pivot_wavelength])
@@ -221,9 +221,9 @@ for image_file in args.images:
             phot_source["int_der_flux_err"] = remove(ccm89(waves, args.av, Rv, unit="aa"), phot_source_conf_pos * photflam)  * rect_width.value - phot_source["int_der_flux"]
             phot_source["dervegamag"] = -2.5 * log10(phot_source["der_flux"].value  /  vega_zpt.value )
             # negative and positive errors become swapped
-            phot_source["dervegamag_err"] = phot_source["der_flux_err"] / (phot_source["der_flux"] * np.log(10))
+            phot_source["dervegamag_err"] = 2.5 * phot_source["der_flux_err"] / (phot_source["der_flux"] * np.log(10))
             phot_source["derstmag"] = stmag(phot_source["der_flux"].value)
-            phot_source["derstmag_err"] = phot_source["der_flux_err"] / (phot_source["der_flux"] * np.log(10))
+            phot_source["derstmag_err"] = 2.5 * phot_source["der_flux_err"] / (phot_source["der_flux"] * np.log(10))
             phot_source["dervegamag"].info.format = "%.3f"
             phot_source["dervegamag_err"].info.format = "%.3f"
             phot_source["derstmag"].info.format = "%.3f"
