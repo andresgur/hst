@@ -150,7 +150,17 @@ old_stmag = ["%.2f$\pm$%.2f" %(stmag, err) for stmag, err in zip(stmags, errmags
 old_fluxes = ["%.2f$\pm$%.2f" %(flux/ scale, err/ scale) for flux, err in zip(fluxes, err)]
 new_stmag = [-2.5 * np.log10(flux) - 21.1 for flux in new_fluxes]
 new_stmag = ["%.2f$\pm$%.2f" %(stmag, err) for stmag, err in zip(new_stmag, errmags)]
-new_fluxes = ["%.2f$\pm$%.2f" %(flux/ scale, err/ scale) for flux, err in zip(new_fluxes, err)]
-outputs = np.vstack((dirs, pivots, old_stmag, old_fluxes, new_stmag, new_fluxes))
+new_fluxes_str = ["%.2f$\pm$%.2f" %(flux/ scale, err/ scale) for flux, err in zip(new_fluxes, err)]
+outputs = np.vstack((dirs, pivots, old_stmag, old_fluxes, new_stmag, new_fluxes_str))
 np.savetxt("%s/results.dat" % outdir, outputs.T, header="#directory\tpivots\tstmag\tfluxes(%.1e)\tnewstmag\tnewfluxes" % scale, delimiter="\t", fmt="%s")#, header="#directory\tpivots\tfluxes\tstmag\tnewfluxes\tnewstmag", fmt="%s\t%.2f\t%s\t%s\t%s\t%s")
+
+xspec_file = open("%s/to_xspec.txt" % outdir, "w+")
+
+for pivot_wavelength, flux, flux_error, bp in zip(pivots, new_fluxes, err, bps):
+    filter_bandwidth = bp.rectwidth().value # http://svo2.cab.inta-csic.es/theory/fps/index.php?id=HST/ACS_HRC.F555W&&mode=browse&gname=HST&gname2=ACS_HRC#filter
+    xspec_file.write("%.1f %.2f %.3e %.3e\n" % (pivot_wavelength - filter_bandwidth / 2, pivot_wavelength + filter_bandwidth / 2, flux, flux_error))
+xspec_file.write("#ftflx2xsp infile=%s xunit=angstrom yunit=ergs/cm^2/s/A nspec=1 phafile=hst_%s.fits rspfile=hst_%s.rsp" % ("to_xspec.txt", args.outdir, args.outdir))
+xspec_file.close()
+
+
 print("Outputs stored to %s" % outdir)
