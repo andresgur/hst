@@ -26,10 +26,9 @@ import warnings
 from photutils.centroids import centroid_2dg
 import subprocess
 
-def stmag(flux, zeropint=-21.1):
+def mag(rate_inf, ZP):
     """Returns the ST magnitude as defined in https://hst-docs.stsci.edu/acsdhb/chapter-5-acs-data-analysis/5-1-photometry"""
-    return -2.5 * np.log10(flux) + zeropint
-
+    return -2.5 * np.log10(rate_inf) - ZP
 
 
 Rv = 3.1
@@ -44,8 +43,11 @@ parser.add_argument("-a", "--aperture_correction", type=float,
                     help='Aperture correction (see https://stsci.edu/hst/instrumentation/wfc3/data-analysis/photometric-calibration/uvis-encircled-energy and https://stsci.edu/hst/instrumentation/acs/data-analysis/aperture-corrections)',
                     nargs="?", default=1)
 parser.add_argument("--uncertainty", type=float,
-                    help='Optional uncertainty on the aperture correction if any')
+                    help='Optional uncertainty on the aperture correction if any. Default 0', default=0)
 args = parser.parse_args()
+
+aperture_correction = args.aperture_correction
+apt_uncertainty = args.uncertainty
 
 source_reg = Regions.read(args.source[0], format="ds9")[0]
 
@@ -69,11 +71,11 @@ for image_file in args.images:
             obsmode = "%s,%s,%s,%s" % (keywords[0], keywords[1], keywords[2],  keywords[3])
         hst_filter = keywords[2]
         # add aperture radius for correction
-        obsmode += ",aper#%.2f" % source_reg.radius.to(u.arcsec).value
+        #obsmode += ",aper#%.2f" % source_reg.radius.to(u.arcsec).value # do not add as the counts are at infinity, which seems the default
         bp = stsyn.band(obsmode)
         # https://stsynphot.readthedocs.io/en/latest/stsynphot/tutorials.html calculate vega zero point
         obs = Observation(stsyn.Vega, bp, binset=bp.binset)
-        vega_zpt = obs.effstim(flux_unit=(u.erg/u.cm**2/u.AA/u.s), area=stsyn.conf.area)
+        vega_zpt = obs.effstim(flux_unit="obmag", area=stsyn.conf.area)
         print(f'VEGAMAG zeropoint for {bp.obsmode} is {vega_zpt:.5E}')
         rect_width = bp.rectwidth()
         units = hst_hdul[1].header["BUNIT"]
@@ -98,7 +100,7 @@ for image_file in args.images:
         image_data = hst_hdul[1].data
         # divide by the exposure time if needed
         if "/S" not in units:
-            print("Units: %s. Applying exposure time correction" % units)
+            warnings.warn("Units: %s. Applying exposure time correction" % units)
             image_data /= exp_time
             units += "/S"
         hst_wcs = wcs.WCS(hst_hdul[1].header)
@@ -132,7 +134,6 @@ for image_file in args.images:
         phot_source = aperture_photometry(image_data, source_aperture,
                        error=np.sqrt(image_data * exp_time) / exp_time, wcs=hst_wcs, mask=mask)
         source_area = source_aperture.area
-        aperture_keyword = "corrected_aperture_sum(%s)" % units
 
         if args.exclude is not None:
             for exclude_reg in Regions.read(args.exclude, format="ds9"):
@@ -147,17 +148,13 @@ for image_file in args.images:
         # if a background region was given
         if args.background is not None:
             bkg_reg = Regions.read(args.background, format="ds9")[0]
-            sigma = 4
+            sigma = 3
             sigclip = SigmaClip(sigma=sigma, maxiters=10)
             bkg_aperture = hst_ut.region_to_aperture(bkg_reg, hst_wcs)
-            phot_bkg = ApertureStats(image_data, bkg_aperture, sigma_clip=sigclip,
-                                     error=np.sqrt(image_data * exp_time) / exp_time,
-                                     mask=mask)
-            # save sigma clipping algorithm
+            phot_bkg = ApertureStats(image_data, bkg_aperture, sigma_clip=sigclip)
+            # save sigma clipping algorithm results
             fig = plt.figure()
-            plt.hist(ApertureStats(image_data, bkg_aperture, sigma_clip=None,
-                                     error=np.sqrt(image_data * exp_time) / exp_time,
-                                     mask=mask).data_cutout.flatten())
+            plt.hist(ApertureStats(image_data, bkg_aperture, sigma_clip=None).data_cutout.flatten())
             plt.axvline(phot_bkg.max, ls="--", label="%d$\sigma$" % sigma,
                         color="black")
             plt.xlabel("Background count rates (ct/s)")
@@ -165,23 +162,45 @@ for image_file in args.images:
             plt.savefig("bkg_clipping.png", dpi=100)
             plt.close(fig)
 
-            #phot_bkg = aperture_photometry(image_data, bkg_aperture, wcs=hst_wcs, error=np.sqrt(image_data * exp_time) / exp_time, mask=mask)
-
-            #phot_source[aperture_keyword] = (phot_source["aperture_sum"] - phot_bkg["aperture_sum"] / bkg_aperture.area * source_area) / args.aperture_correction
-            phot_source[aperture_keyword]= phot_source["aperture_sum"] - phot_bkg.median * source_area # bkg subtracted counts
             # the uncertainty on the bkg is the standard error or RMSE
-            bkg_unc = phot_bkg.std / np.sqrt(len(phot_bkg.data_cutout))
-            phot_source["corrected_aperture_err"] = sqrt(phot_source["aperture_sum_err"] ** 2 + bkg_unc ** 2) / args.aperture_correction
+            err_bkg = np.sqrt(phot_bkg.data_cutout * exp_time) # poisson error
+            bkg_unc = np.sqrt(np.sum(err_bkg**2)) / len(phot_bkg.data_cutout) * source_area # error on the mean
+            # subtract the bkg contribution
+            phot_source["aperture_sum"] = phot_source["aperture_sum"] - phot_bkg.median * source_area
+            # add bkg uncertainty in quadrature
+            phot_source["aperture_sum_err"] = np.sqrt(phot_source["aperture_sum_err"]**2 + (bkg_unc) ** 2)
 
-        else:
-            logging.warning("No background was given, no background correction will be performed.")
-            phot_source[aperture_keyword] = phot_source["aperture_sum"] / args.aperture_correction
-            phot_source["aperture_correction"] = args.aperture_correction
-            if args.uncertainty is None:
-                phot_source["corrected_aperture_err"] = phot_source["aperture_sum_err"] / args.aperture_correction
-            else:
-                phot_source["corrected_aperture_err"] = np.sqrt((phot_source["aperture_sum_err"] / args.aperture_correction)**2 + (phot_source[aperture_keyword] * args.uncertainty/ args.aperture_correction)**2)
-                phot_source["aperture_correction_err"] = args.uncertainty
+            phot_source["bkg_sum"] = phot_bkg.median * source_area
+            phot_source['bkg_sum'].info.format = '%.2f'
+            phot_source["bkg_err"] = bkg_unc
+            phot_source['bkg_err'].info.format = '%.2f'
+
+            plt.figure()
+            plt.imshow(image_data, norm=simple_norm(image_data, 'linear', percent=99),
+                       interpolation='nearest', cmap="cividis")
+            bkg_aperture.plot(color='magenta', lw=1,
+                                       label='BKG' % source_aperture.r)
+
+            plt.xlim(src_x - 150, src_x + 150)
+            plt.ylim(src_y - 150, src_y + 150)
+            plt.scatter(src_x, src_y, marker="x", color="red")
+            source_aperture.plot(color='white', lw=1,
+                                       label='SRC')
+            plt.legend()
+            plt.xlabel("Ra")
+            plt.ylabel("Dec")
+            plt.savefig("bkg_extraction_%s" % (args.source[0].replace(".reg",".png")), dpi=200)
+            plt.close(fig)
+
+        # aperture correction
+        aperture_keyword = "corrected_aperture_sum(%s)" % units
+        phot_source[aperture_keyword] = phot_source["aperture_sum"] / aperture_correction
+        phot_source["corrected_aperture_err"] = np.sqrt((phot_source["aperture_sum_err"] / aperture_correction)**2 + (phot_source["aperture_sum"] * apt_uncertainty/ (aperture_correction**2))**2)
+        phot_source["aperture_correction"] = aperture_correction
+        phot_source["aperture_correction"].info.format = "%.4f"
+        phot_source["aperture_correction_err"] = apt_uncertainty
+        phot_source["aperture_correction_err"].info.format = "%.4f"
+
         phot_source_conf_pos = phot_source[aperture_keyword] + phot_source["corrected_aperture_err"]
         phot_source_conf_neg = phot_source[aperture_keyword] - phot_source["corrected_aperture_err"]
 
@@ -197,33 +216,40 @@ for image_file in args.images:
         # more appropiate for emission lines
         line_flux = "monochromatic_flux(%s)" % (photflam.unit)
         phot_source[line_flux] = phot_source[aperture_keyword] * bp.emflx(bp.area)
+        phot_source[line_flux].info.format = "%.3e"
         phot_source["monochromatic_flux_err"] = phot_source_conf_pos * bp.emflx(bp.area) - phot_source[line_flux]
+        phot_source["monochromatic_flux_err"].info.format = "%.3e"
         #https://www.stsci.edu/hst/instrumentation/acs/data-analysis/zeropoints
         # be careful as the ZP is simply -21.1, the zeropoint for ACS needs to be computed
         ##phot_source["acsmag"] = -2.5 * log10(phot_source[aperture_keyword]) - zero_point # in e/s
         ##phot_source["acsmag_err_pos"] = -2.5 * log10(phot_source_conf_pos) - zero_point - phot_source["acsmag"]
         ##phot_source["acsmag_err_neg"] = phot_source["acsmag"] - (-2.5 * log10(phot_source_conf_neg) - zero_point)
 
-        phot_source["vegamag"] = -2.5 * log10(flux_density.value /  vega_zpt.value)
+        phot_source["vegamag"] = mag(phot_source[aperture_keyword].value, vega_zpt.value)
         # this follows from error propagation
-        phot_source["vegamag_err"] = 2.5 * phot_source["flux_err"] / (flux_density.value * np.log(10))
-
-        phot_source["stmag"] = stmag(flux_density.value)
-        phot_source["stmag_err"] = 2.5 * phot_source["flux_err"] / (flux_density.value * np.log(10))
+        phot_source["vegamag_err"] = 2.5 * phot_source["corrected_aperture_err"] / (phot_source[aperture_keyword].value * np.log(10))
+        stmag_zeropoint = -2.5 * np.log10(photflam.value) + zero_point # zero_point is already negative
+        phot_source["stmag"] = mag(phot_source[aperture_keyword].value, - stmag_zeropoint)
+        phot_source["stmag_err"] = phot_source["vegamag_err"]
+        phot_source["vegamag"].info.format = "%.3f"
+        phot_source["vegamag_err"].info.format = "%.3f"
+        phot_source["stmag"].info.format = "%.2f"
+        phot_source["stmag_err"].info.format = "%.3f"
 
         if args.av is not None:
             waves = np.array([pivot_wavelength])
-            phot_source["der_flux"] = remove(ccm89(waves, args.av, Rv, unit="aa"), phot_source[flux_header])
-            phot_source["der_flux_err"] = remove(ccm89(waves, args.av, Rv, unit="aa"), phot_source_conf_pos * photflam) - phot_source["der_flux"]
+            mag_ext = ccm89(waves, args.av, Rv, unit="aa")
+            phot_source["der_flux"] = remove(mag_ext, phot_source[flux_header])
+            phot_source["der_flux_err"] = remove(mag_ext, phot_source_conf_pos * photflam) - phot_source["der_flux"]
             phot_source['der_flux'].info.format = '%.2E'
             phot_source['der_flux_err'].info.format = '%.2E'
             phot_source["int_der_flux"] = phot_source["der_flux"]  * rect_width.value
-            phot_source["int_der_flux_err"] = remove(ccm89(waves, args.av, Rv, unit="aa"), phot_source_conf_pos * photflam)  * rect_width.value - phot_source["int_der_flux"]
-            phot_source["dervegamag"] = -2.5 * log10(phot_source["der_flux"].value  /  vega_zpt.value )
+            phot_source["int_der_flux_err"] = remove(mag_ext, phot_source_conf_pos * photflam)  * rect_width.value - phot_source["int_der_flux"]
+            phot_source["dervegamag"] = phot_source["vegamag"] - mag_ext
             # negative and positive errors become swapped
-            phot_source["dervegamag_err"] = 2.5 * phot_source["der_flux_err"] / (phot_source["der_flux"] * np.log(10))
-            phot_source["derstmag"] = stmag(phot_source["der_flux"].value)
-            phot_source["derstmag_err"] = 2.5 * phot_source["der_flux_err"] / (phot_source["der_flux"] * np.log(10))
+            phot_source["dervegamag_err"] = phot_source["vegamag_err"]
+            phot_source["derstmag"] = phot_source["stmag"] - mag_ext
+            phot_source["derstmag_err"] = phot_source["stmag_err"]
             phot_source["dervegamag"].info.format = "%.3f"
             phot_source["dervegamag_err"].info.format = "%.3f"
             phot_source["derstmag"].info.format = "%.3f"
@@ -245,10 +271,7 @@ for image_file in args.images:
         #phot_source["acsmag"].info.format = "%.2f"
         #phot_source["acsmag_err_neg"].info.format = "%.2f"
         #phot_source["acsmag_err_pos"].info.format = "%.3f"
-        phot_source["vegamag"].info.format = "%.3f"
-        phot_source["vegamag_err"].info.format = "%.3f"
-        phot_source["stmag"].info.format = "%.2f"
-        phot_source["stmag_err"].info.format = "%.3f"
+
 
         reg_basename = os.path.basename(args.source[0]).replace('.reg', '')
         out_data_file = "aperture_phot_%s_%s.csv" % (hst_filter, reg_basename)

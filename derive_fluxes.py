@@ -21,17 +21,28 @@ import stsynphot as stsyn
 from lmfit.models import PowerLawModel
 import matplotlib.pyplot as plt
 
+parser = argparse.ArgumentParser(description='Refines fluxes using a powerlaw for the intrinsic fluxes.')
+parser.add_argument("directories", nargs="+", help="Directories with the HST images and flux information", type=str)
+parser.add_argument("-o", "--outdir", nargs="?", help="Output directory. Default is pow_fluxes_", type=str, default="")
+args = parser.parse_args()
 
-working_dir = "%s/scripts/pythonscripts/hst/mastDownload/HLA/" % os.getenv("HOME")
+working_dir = os.getcwd()
+print(working_dir)
 os.chdir(working_dir)
-dirs = glob.glob("%s/hst_9774_*f*w" % working_dir)
-print(dirs)
+dirs = args.directories
+
+
+outdir = "pow_fluxes_" + args.outdir
+
+if not os.path.isdir(outdir):
+    os.mkdir(outdir)
 
 bps = []
 sp = SourceSpectrum(PowerLawFlux1D, alpha=0, amplitude=1, x_0=1)
 fluxes = []
 err = []
-
+stmags = []
+errmags = []
 
 for directory in dirs:
     os.chdir(directory)
@@ -65,6 +76,8 @@ for directory in dirs:
     data = np.genfromtxt("%s" % (file), names=True, delimiter=",")
     fluxes.append(data["der_flux"])
     err.append(data["der_flux_err"])
+    stmags.append(data["derstmag"])
+    errmags.append(data["derstmag_err"])
     os.chdir(working_dir)
     bps.append(stsyn.band(obsmode))
 
@@ -91,6 +104,9 @@ new_exponent = 0
 i = 1
 plt.figure()
 
+exponent_file = open("%s/exponents.dat" % outdir, "w+")
+exponent_file.write("#iteration\texponent\n")
+exponent_file.write("%d\t%.3f\n"%(0, exponent))
 while (np.abs((exponent - new_exponent) / exponent) > 0.01) and i<10:
     obs = [Observation(sp, bp) for bp in bps]
     new_fluxes = [ob.effstim(area=stsyn.conf.area).value for ob in obs]
@@ -100,14 +116,13 @@ while (np.abs((exponent - new_exponent) / exponent) > 0.01) and i<10:
     sp = SourceSpectrum(PowerLawFlux1D, alpha=-result.best_values["exponent"],
                     amplitude=result.best_values["amplitude"], x_0=1)
     print("Iteration %d" % i)
+    exponent_file.write("%d\t%.3f\n"%(i, new_exponent))
     i+=1
+
+exponent_file.close()
 plot_x = np.arange(min(x), max(x), 100)
 plt.plot(plot_x, result.eval(x=plot_x), label='Last best-fit ($\\alpha$ = %.2f)' % new_exponent, ls="--")
 print("Converged in %d iterations" % i)
-print("First exponent")
-print(first_exponent)
-print("Newly found exponent")
-print(new_exponent)
 #plt.yscale("log")
 #plt.xscale("log")
 plt.ylabel("F$\lambda$ (erg/s/cm$^2$/$\AA$)")
@@ -115,12 +130,27 @@ plt.xlabel("$\AA$")
 plt.errorbar(pivots, fluxes, yerr=yerr, fmt="o", label="Old")
 plt.errorbar(x, ynew, yerr=yerr, fmt="o", label="New")
 plt.legend()
-plt.savefig("iteration_%d.png" %i, dpi=100)
+plt.savefig("%s/iteration_%d.png" % (outdir,i), dpi=100)
+
+
 print("Pivot wavelengths (\AA)")
 print(x)
-stmag = [-2.5 * np.log10(flux) - 21.1 for flux in y]
+
 print("Original ST magnitudes:")
-print(stmag)
+print(stmags)
+print("Original fluxes")
+print(fluxes)
 print("Recalculated ST magntiudes:")
-stmag = [-2.5 * np.log10(flux) - 21.1 for flux in ynew]
+stmag = [-2.5 * np.log10(flux) - 21.1 for flux in fluxes]
 print(stmag)
+print("Recalculated fluxes")
+print(new_fluxes)
+scale = 10**-18
+old_stmag = ["%.2f$\pm$%.2f" %(stmag, err) for stmag, err in zip(stmags, errmags)]
+old_fluxes = ["%.2f$\pm$%.2f" %(flux/ scale, err/ scale) for flux, err in zip(fluxes, err)]
+new_stmag = [-2.5 * np.log10(flux) - 21.1 for flux in new_fluxes]
+new_stmag = ["%.2f$\pm$%.2f" %(stmag, err) for stmag, err in zip(new_stmag, errmags)]
+new_fluxes = ["%.2f$\pm$%.2f" %(flux/ scale, err/ scale) for flux, err in zip(new_fluxes, err)]
+outputs = np.vstack((dirs, pivots, old_stmag, old_fluxes, new_stmag, new_fluxes))
+np.savetxt("%s/results.dat" % outdir, outputs.T, header="#directory\tpivots\tstmag\tfluxes(%.1e)\tnewstmag\tnewfluxes" % scale, delimiter="\t", fmt="%s")#, header="#directory\tpivots\tfluxes\tstmag\tnewfluxes\tnewstmag", fmt="%s\t%.2f\t%s\t%s\t%s\t%s")
+print("Outputs stored to %s" % outdir)
