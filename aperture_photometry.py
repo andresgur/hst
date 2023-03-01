@@ -163,7 +163,7 @@ for image_file in args.images:
             plt.close(fig)
 
             # the uncertainty on the bkg is the standard error or RMSE
-            err_bkg = np.sqrt(phot_bkg.data_cutout * exp_time) # poisson error
+            err_bkg = np.sqrt(phot_bkg.data_cutout * exp_time) / exp_time # poisson error
             bkg_unc = np.sqrt(np.sum(err_bkg**2)) / len(phot_bkg.data_cutout) * source_area # error on the mean
             # subtract the bkg contribution
             phot_source["aperture_sum"] = phot_source["aperture_sum"] - phot_bkg.median * source_area
@@ -179,7 +179,7 @@ for image_file in args.images:
             plt.imshow(image_data, norm=simple_norm(image_data, 'linear', percent=99),
                        interpolation='nearest', cmap="cividis")
             bkg_aperture.plot(color='magenta', lw=1,
-                                       label='BKG' % source_aperture.r)
+                                       label="BKG")
 
             plt.xlim(src_x - 150, src_x + 150)
             plt.ylim(src_y - 150, src_y + 150)
@@ -254,6 +254,11 @@ for image_file in args.images:
             phot_source["dervegamag_err"].info.format = "%.3f"
             phot_source["derstmag"].info.format = "%.3f"
             phot_source["derstmag_err"].info.format = "%.3f"
+            flux_xspec = phot_source["der_flux"].value
+            flux_xspec_err = phot_source["der_flux_err"].value
+        else:
+            flux_xspec = phot_source[flux_header].value
+            flux_xspec_err = phot_source['flux_err'].value
 
         # formatting
         phot_source["xcenter"].info.format = '%.2f'
@@ -289,7 +294,8 @@ for image_file in args.images:
         f.close()
 
         f = open("%s" % ("%s" % xspec_outfile), "w+")
-        f.write("%.2f %.2f %.3e %.3e\n" % (pivot_wavelength - filter_bandwidth / 2, pivot_wavelength + filter_bandwidth / 2, phot_source[flux_header].value, phot_source['flux_err'].value))
+        f.write("%.2f %.2f %.3e %.3e\n" % (pivot_wavelength - filter_bandwidth / 2, pivot_wavelength + filter_bandwidth / 2,
+                                         flux_xspec, flux_xspec_err))
         f.close()
 
         print("Use 'ftflx2xsp infile=%s xunit=angstrom yunit=ergs/cm^2/s/A nspec=1 phafile=hst_%s.fits rspfile=hst_%s.rsp' to convert to XSPEC format" % (xspec_outfile, hst_filter, hst_filter))
