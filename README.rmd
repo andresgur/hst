@@ -3,3 +3,5 @@ astro_corr.py will correct the WCS of the HST image
 aperture_photometry.py is meant to retrieve physical fluxes and magntiudes from point like sources
 mast.py --> Downloads observations and creates a latex table with them
 aperture_correction.py --> Allows to determine the PSF aperture correction to infinity from stars in the field
+derive_fluxes.py --> Minimizes the difference between an absorbed powerlaw and the observed count rates
+derive_fluxes_Yang2011.py --> Does a similar thing but following an approach similar to Yang et al. 2011
