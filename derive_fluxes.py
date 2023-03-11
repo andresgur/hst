@@ -14,12 +14,36 @@ import stsynphot as stsyn
 from synphot import Observation
 from astropy.time import Time
 import glob
-from synphot.models import PowerLawFlux1D
+from synphot.models import PowerLawFlux1D, Empirical1D
 from synphot import SourceSpectrum,ReddeningLaw, Observation
 from extinction import ccm89, calzetti00, remove
 from lmfit.models import PowerLawModel
-import stsynphot as stsyn
 import matplotlib.pyplot as plt
+from scipy.optimize import minimize
+
+
+def minimize_powerlaw(params):
+    index = params[0]
+    amplitude = params[1]
+    sp = SourceSpectrum(PowerLawFlux1D, alpha=-index,
+                        amplitude=amplitude * photflam_units, x_0=1) # powerlaw
+    obs = [Observation(sp * ext, bp) for bp in bps] # absorbed powerlaw
+    model_rates = [ob.countrate(area=stsyn.conf.area).value for ob in obs]
+    return countrates_residuals(rates, uncertainties, model_rates)
+
+def minimize_index(params):
+    index = params[0]
+    sp = SourceSpectrum(PowerLawFlux1D, alpha=-index,
+                        amplitude=1 * photflam_units,
+                        x_0=1) # powerlaw
+    sp = sp * ext # extinguish it
+    sp = sp.normalize(rates[index_norm] * u.ct, bps[index_norm], area=stsyn.conf.area) # renormalize to match count rates
+    obs = [Observation(sp, bp) for bp in bps] # absorbed powerlaw
+    model_rates = [ob.countrate(area=stsyn.conf.area).value for ob in obs]
+    return countrates_residuals(rates, uncertainties, model_rates)
+
+def countrates_residuals(rates, uncertainties, model_rates):
+    return np.sum(((rates - model_rates)/uncertainties)**2)
 
 parser = argparse.ArgumentParser(description='Refines fluxes using a powerlaw for the intrinsic fluxes.')
 parser.add_argument("directories", nargs="+", help="Directories with the HST images and flux information", type=str)
@@ -33,17 +57,23 @@ print(working_dir)
 os.chdir(working_dir)
 dirs = args.directories
 EBV = args.EBV[0]
+
 outdir = "pow_fluxes_" + args.outdir
 
 if not os.path.isdir(outdir):
     os.mkdir(outdir)
 
 bps = []
+photflam_units = u.erg / u.AA / u.s / u.cm**2
+#mwavg == Cardelli+1989 milkiway diffuse Rv=3.1
+#Calzetti starbust diffuse xgal
+
 fluxes = []
 err = []
 stmags = []
 errmags = []
-
+rates = []
+uncertainties = []
 
 for directory in dirs:
     os.chdir(directory)
@@ -75,14 +105,16 @@ for directory in dirs:
     photflam = photflam * u.erg / u.AA / u.s / u.cm**2
     file = glob.glob("aperture_phot_*.csv")[0]
     data = np.genfromtxt("%s" % (file), names=True, delimiter=",")
-    fluxes.append(data["fluxerg__Angstrom_cm2_s"]) # observed fluxes
+    fluxes.append(data["fluxerg__Angstrom_cm2_s"]) # der_flux, fluxerg__Angstrom_cm2_s
     err.append(data["flux_err"])
     stmags.append(data["derstmag"])
     errmags.append(data["derstmag_err"])
     os.chdir(working_dir)
     bps.append(stsyn.band(obsmode))
+    rates.append(data["corrected_aperture_sumELECTRONSS"])
+    uncertainties.append(data["corrected_aperture_err"])
 
-
+# sort everything in ascending wavelength
 pivots = [bp.pivot().value for bp in bps]
 plt.xlabel("Wavelength ($\AA$)")
 sorting = np.argsort(pivots)
@@ -91,82 +123,90 @@ pivots = np.array(pivots)[sorting]
 yerr = np.array(err)[sorting]
 bps = np.array(bps)[sorting]
 dirs = np.array(dirs)[sorting]
+stmags = np.array(stmags)[sorting]
+rates = np.array(rates)[sorting]
+uncertainties = np.array(uncertainties)[sorting]
 plt.errorbar(pivots, fluxes, yerr=yerr, ls="None")
-
-# fit powerlaw to the OBSERVED fluxes
-powerlaw = PowerLawModel()
-
-params= powerlaw.guess(fluxes, x=pivots)
-powerlaw.set_param_hint("amplitude", max=np.inf, value=1.0017809528994497e-14) # setting a minimum value braks everything
-powerlaw.set_param_hint("exponent", max=0, value=-2, min=-10)
-params = powerlaw.make_params()
-print(params)
-result = powerlaw.fit(fluxes, params, x=pivots, weights=1/yerr)
-
-observed_sp = SourceSpectrum(PowerLawFlux1D, alpha=-result.best_values["exponent"],
-                    amplitude=result.best_values["amplitude"], x_0=1)
-#power_model.set_param_hint("amplitude", min=fluxes[-1], max=fluxes[0], value=-1)
-#power_model.set_param_hint("exponent", min=0, max=5,value=1)
-exponent = -result.best_values["exponent"]
-amplitude = result.best_values["amplitude"]
-
-i = 1
-plt.figure()
 
 Rv = 3.1
 av = Rv * EBV
+mag_ext = ccm89(pivots, av, Rv, unit="aa")
 
-#mwavg_file == Cardelli+1989 milkiway diffuse Rv=3.1
-#Calzetti starbust diffuse xgal_file
-deredden = ReddeningLaw.from_extinction_model('mwavg').extinction_curve(-EBV)
+intrinsic_fluxes = remove(mag_ext, fluxes) # derreden the fluxes
+
 ext = ReddeningLaw.from_extinction_model('mwavg').extinction_curve(EBV)
+derreden = ReddeningLaw.from_extinction_model('mwavg').extinction_curve(-EBV)
 
 
-# derreden the powerlaw
-intrinsic_sp = observed_sp * deredden
-# fit the intrinsic powerlaw
-result = powerlaw.fit(intrinsic_sp(pivots).value, params, x=pivots, weights=1/yerr)
+powerlaw = PowerLawModel()
 
-new_exponent = -result.best_values["exponent"]
-exponent_file = open("%s/exponents.dat" % outdir, "w+")
-exponent_file.write("#iteration\texponent\n")
-exponent_file.write("%d\t%.3f\n"%(0, new_exponent))
 
-exponent = 0.1
+if len(fluxes) > 2:
+    print("Minimizing powerlaw index and normalization...")
 
-while (np.abs((exponent - new_exponent) / exponent) > 0.01) and i<100:
-    exponent = new_exponent
+    bnds = ((-np.inf, 0), (1e-20, np.inf))
+    params = powerlaw.guess(intrinsic_fluxes, x=pivots)
+    result = powerlaw.fit(intrinsic_fluxes, params, x=pivots, weights=1/yerr)
+    #exponent = first_exponent
 
-    intrinsic_sp = SourceSpectrum(PowerLawFlux1D, alpha=new_exponent,
-                        amplitude=result.best_values["amplitude"], x_0=1)
-    obs = [Observation(intrinsic_sp * ext, bp) for bp in bps] # create observations with the extiguished spectrum
-    new_fluxes = [ob.effstim(area=stsyn.conf.area).value for ob in obs]
-    result = powerlaw.fit(new_fluxes, params, x=pivots, weights=1/yerr)
-    observed_sp = SourceSpectrum(PowerLawFlux1D, alpha=-result.best_values["exponent"],
-                        amplitude=result.best_values["amplitude"], x_0=1)
-    intrinsic_sp = observed_sp * deredden
-    result = powerlaw.fit(intrinsic_sp(pivots).value, params, x=pivots, weights=1/yerr)
-    new_exponent = -result.best_values["exponent"]
-    print("Iteration %d" % i)
-    exponent_file.write("%d\t%.3f\n"%(i, new_exponent))
-    i+=1
+    result = minimize(minimize_powerlaw, (result.best_values["exponent"],
+                      result.best_values["amplitude"]),
+                      bounds=bnds, method="L-BFGS-B", tol=1e-6)
 
-##print(result.best_values["amplitude"])
-new_intrinsic_fluxes = intrinsic_sp(pivots).value
+    new_exponent = result.x[0]
+    new_amplitude = result.x[1]
+# if only one datapoint minimize the index only
+else:
+    print("Minimizing powerlaw index...")
+    bnds = ((-np.inf, 0),)
+    index_norm = np.argmin(uncertainties) # fix the normalization to the value with the lowest uncertainty
+    result = minimize(minimize_index, np.array([-1.4]),
+                          bounds=bnds, method="L-BFGS-B", tol=1e-6)
+    new_exponent = result.x[0]
+    sp = SourceSpectrum(PowerLawFlux1D, alpha=-new_exponent,
+                        amplitude=1 * photflam_units,
+                        x_0=1) # powerlaw
+    sp = sp * ext # extinguish it
+    # adjust normalization and derreden it
+    sp = sp.normalize(rates[index_norm] * u.ct, bps[index_norm], area=stsyn.conf.area) * derreden
+    new_amplitude = sp.model.factor_2
 
-exponent_file.close()
-plot_x = np.arange(min(pivots), max(pivots), 10)
-plt.plot(plot_x, result.eval(x=plot_x), label='Last best-fit ($\\alpha$ = %.2f)' % new_exponent, ls="--")
-print("Converged in %d iterations" % i)
+print("Done\n")
+print(result)
+
+best_params = powerlaw.make_params(exponent=new_exponent, amplitude=new_amplitude)
+
+sp = SourceSpectrum(PowerLawFlux1D, alpha=-new_exponent,
+                    amplitude=new_amplitude * photflam_units, x_0=1) # best-fit powerlaw
+
+# residual plot
+obs = [Observation(sp * ext, bp) for bp in bps]
+model_counts = [ob.countrate(area=stsyn.conf.area).value for ob in obs]
+plt.figure()
+plt.errorbar(pivots, model_counts - rates, yerr=uncertainties, color="black")
+chi_square = np.sum(((model_counts - rates) / uncertainties)**2)
+print("\nChi-square/dof = %.2f/%d\n" % (chi_square, len(rates) - 2))
+plt.xlabel("$\AA$")
+plt.axhline(y=0, ls="solid", color="black", zorder=-10, lw=1)
+plt.ylabel("Observed - model (ct/s)")
+plt.savefig("%s/residuals.png" % outdir)
+
+sp = SourceSpectrum(PowerLawFlux1D, alpha=-new_exponent,
+                    amplitude=new_amplitude, x_0=1) # best-fit powerlaw
+# with the best fit powerlaw, get now the INTRINSIC FLUXES
+intrinsic_fluxes = sp(pivots).value
 #plt.yscale("log")
 #plt.xscale("log")
-plt.ylabel("F$\lambda$ (erg/s/cm$^2$/$\AA$)")
+plt.figure()
+plot_x = np.arange(min(pivots), max(pivots), 100)
+plt.plot(plot_x, powerlaw.eval(params=best_params, x=plot_x), label='Last best-fit ($\\alpha$ = %.2f)' % new_exponent,
+         ls="--")
+plt.ylabel("F$_\lambda$ (erg/s/cm$^2$/$\AA$)")
 plt.xlabel("$\AA$")
-plt.errorbar(pivots, fluxes, yerr=yerr, fmt="o", label="Old")
-plt.errorbar(pivots, new_intrinsic_fluxes, yerr=yerr, fmt="o", label="New")
+plt.errorbar(pivots, fluxes, yerr=yerr, fmt="o", label="Old extinction-corrected")
+plt.errorbar(pivots, intrinsic_fluxes, yerr=yerr, fmt="o", label="Extinction-corrected fluxes")
 plt.legend()
-plt.savefig("%s/iteration_%d.png" % (outdir,i), dpi=100)
-
+plt.savefig("%s/minimized.png" % (outdir), dpi=100)
 
 print("Pivot wavelengths (\AA)")
 print(pivots)
@@ -176,25 +216,26 @@ print(stmags)
 print("Original fluxes")
 print(fluxes)
 print("Recalculated ST magntiudes:")
-stmag = [-2.5 * np.log10(flux) - 21.1 for flux in fluxes]
+stmag = [-2.5 * np.log10(flux) - 21.1 for flux in intrinsic_fluxes]
 print(stmag)
 print("Recalculated fluxes")
-print(new_fluxes)
+print(intrinsic_fluxes)
 scale = 10**-18
 old_stmag = ["%.2f$\pm$%.2f" %(stmag, err) for stmag, err in zip(stmags, errmags)]
 old_fluxes = ["%.2f$\pm$%.2f" %(flux/ scale, err/ scale) for flux, err in zip(fluxes, err)]
-new_stmag = [-2.5 * np.log10(flux) - 21.1 for flux in new_intrinsic_fluxes]
+new_stmag = [-2.5 * np.log10(flux) - 21.1 for flux in intrinsic_fluxes]
 new_stmag = ["%.2f$\pm$%.2f" %(stmag, err) for stmag, err in zip(new_stmag, errmags)]
-new_fluxes_str = ["%.2f$\pm$%.2f" %(flux/ scale, err/ scale) for flux, err in zip(new_intrinsic_fluxes, err)]
-outputs = np.vstack((dirs, pivots, old_stmag, old_fluxes, new_stmag, new_fluxes_str))
-np.savetxt("%s/results.dat" % outdir, outputs.T, header="#directory\tpivots\tstmag\tfluxes(%.1e)\tnewstmag\tnewfluxes" % scale, delimiter="\t", fmt="%s")#, header="#directory\tpivots\tfluxes\tstmag\tnewfluxes\tnewstmag", fmt="%s\t%.2f\t%s\t%s\t%s\t%s")
+intrinsic_fluxes_str = ["%.2f$\pm$%.2f" %(flux/ scale, err/ scale) for flux, err in zip(intrinsic_fluxes, err)]
+outputs = np.vstack((dirs, pivots, old_stmag, old_fluxes, new_stmag, intrinsic_fluxes_str))
+np.savetxt("%s/results.dat" % outdir, outputs.T, header="directory\tpivots\tstmag\tfluxes(%.1e)\tnewstmag\tnewfluxes" % scale,
+            delimiter=" & ", fmt="%s")#, header="#directory\tpivots\tfluxes\tstmag\tnewfluxes\tnewstmag", fmt="%s\t%.2f\t%s\t%s\t%s\t%s")
 
 xspec_file = open("%s/to_xspec.txt" % outdir, "w+")
 
-for pivot_wavelength, flux, flux_error, bp in zip(pivots, new_fluxes, err, bps):
+for pivot_wavelength, flux, flux_error, bp in zip(pivots, intrinsic_fluxes, err, bps):
     filter_bandwidth = bp.rectwidth().value # http://svo2.cab.inta-csic.es/theory/fps/index.php?id=HST/ACS_HRC.F555W&&mode=browse&gname=HST&gname2=ACS_HRC#filter
     xspec_file.write("%.1f %.2f %.3e %.3e\n" % (pivot_wavelength - filter_bandwidth / 2, pivot_wavelength + filter_bandwidth / 2, flux, flux_error))
-xspec_file.write("#ftflx2xsp infile=%s xunit=angstrom yunit=ergs/cm^2/s/A nspec=1 phafile=hst_%s.fits rspfile=hst_%s.rsp" % ("to_xspec.txt", args.outdir, args.outdir))
+xspec_file.write("#ftflx2xsp infile=%s xunit=angstrom yunit=ergs/cm^2/s/A nspec=1 phafile=hst_%s.fits rspfile=hst_%s.rsp clobber=yes" % ("to_xspec.txt", args.outdir, args.outdir))
 xspec_file.close()
 
 
