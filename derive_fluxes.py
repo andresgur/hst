@@ -11,21 +11,19 @@ from astropy import wcs
 import logging
 import numpy as np
 import stsynphot as stsyn
-from synphot import Observation
 from astropy.time import Time
 import glob
-from synphot.models import PowerLawFlux1D
+from synphot.models import PowerLawFlux1D, ConstFlux1D
 from synphot.blackbody import BlackBody1D
 from synphot import SourceSpectrum,ReddeningLaw, Observation
 from extinction import ccm89, calzetti00, remove
-from lmfit.models import PowerLawModel
 import matplotlib.pyplot as plt
 from scipy.optimize import minimize, least_squares
 
 
 def minimize_model(params):
     # dictionary of variable parameters
-    param_dict = {name:value for name,value in zip(varparamnames, params)}
+    param_dict = {name:value for name, value in zip(varparamnames, params)}
     # add fixed parameters
     for paramkey, param in zip(model.fixed.keys(), model.parameters):
         if model.fixed[paramkey]:
@@ -38,8 +36,14 @@ def minimize_model(params):
     elif "bolometric_flux" in param_dict:
         param_dict["bolometric_flux"] = param_dict["bolometric_flux"] * u.Hz
 
-    sp = SourceSpectrum(model.__class__, **param_dict, z=z) # model
-    obs = [Observation(sp * ext, bp) for bp in bps] # absorbed model
+    sp = SourceSpectrum(model.__class__, **param_dict, z=z) * ext_cardelli * ext_calzetti # extinguished model
+
+    obs = [Observation(sp , bp, binset=bp.binset) for bp in bps] # absorbed model
+    if "amplitude" in model.fixed.keys():
+        if model.fixed["amplitude"]:
+            # if the amplitude is fixed, renormalize based on the new index
+            sp = sp.normalize(rates[index_norm] * u.ct, bps[index_norm], area=stsyn.conf.area) # renormalize to match count rates
+
     model_rates = [ob.countrate(area=stsyn.conf.area).value for ob in obs] # rates from absorbed model
     return countrates_residuals(rates, uncertainties, model_rates)
 
@@ -55,19 +59,20 @@ def minimize_index(params):
     model_rates = [ob.countrate(area=stsyn.conf.area).value for ob in obs]
     return countrates_residuals(rates, uncertainties, model_rates)
 
+
 def countrates_residuals(rates, uncertainties, model_rates):
     return (rates - model_rates)/uncertainties
 
 parser = argparse.ArgumentParser(description='Refines fluxes using a powerlaw for the intrinsic fluxes.')
 parser.add_argument("directories", nargs="+", help="Directories with the HST images and flux information", type=str)
 parser.add_argument("-o", "--outdir", nargs="?", help="Output directory. Default is pow_fluxes_", type=str, default="")
-parser.add_argument("-E", "--EBV", nargs=1, type=float, help="E(B-V) value for the extinction correction. Default assumes no extinction",
-                    default=0)
+parser.add_argument("-E", "--EBV", nargs=2, type=float, help="Galactic (Rv=3.1 Cardelli) + extragalactic E(B-V) (Rv=4.05, Calzetti) value(s) for the extinction correction. Default assumes no extinction",
+                    default=[0.0, 0.0])
 parser.add_argument("-n", "--nsims", metavar="N", nargs="?", type=int, help="Number of powerlaw draws for the error calculation. At least 500. Default 600",
                     default=600)
-parser.add_argument("-m", "--model", nargs="?", metavar="model", type=str, choices=["blackbody", "powerlaw"], help="Model for the derivation of fluxes. Default powerlaw",
+parser.add_argument("-m", "--model", nargs="?", metavar="model", type=str, choices=["blackbody", "powerlaw", "constant"], help="Model for the derivation of fluxes. Default powerlaw",
                     default="powerlaw")
-parser.add_argument("-z", "--redshift", nargs="?", metavar="z", type=float, help="Redshift of the spectrum",
+parser.add_argument("-z", "--redshift", nargs="?", metavar="z", type=float, help="Redshift of the spectrum. Default 0",
                     default=0)
 args = parser.parse_args()
 
@@ -77,14 +82,15 @@ os.chdir(working_dir)
 dirs = args.directories
 print("Analysing the following directories")
 print(dirs)
-EBV = args.EBV[0]
+EBV_cardelli = args.EBV[0]
+EBV_calzetti = args.EBV[1]
 z = args.redshift
 #mwavg == Cardelli+1989 milkiway diffuse Rv=3.1
 #Calzetti starbust diffuse xgal
 #Rv = 3.1
-extinction_curve = "Cardelli"
+##extinction_curve = args.curve
 
-outdir = "%s_fluxes_%s_EBV_%.2f_%s_z%.2e" %(args.model, args.outdir, EBV, extinction_curve, z)
+outdir = "%s_fluxes_%s_cardelli_EBV%.2f_calzetti_EBV%.2f_z%.2e" %(args.model, args.outdir, EBV_cardelli, EBV_calzetti, z)
 
 if not os.path.isdir(outdir):
     os.mkdir(outdir)
@@ -151,29 +157,26 @@ stmags = np.array(stmags)[sorting]
 rates = np.array(rates)[sorting]
 uncertainties = np.array(uncertainties)[sorting]
 plt.errorbar(pivots, fluxes, yerr=yerr, ls="None")
+#http://stsdas.stsci.edu/astropy_synphot/synphot/reddening.html
+Rv=3.1
+keyword = "mwavg"
+av = Rv * EBV_cardelli
+mag_ext_cardelli = ccm89(pivots, av, Rv, unit="aa")
+ext_cardelli = ReddeningLaw.from_extinction_model(keyword).extinction_curve(EBV_cardelli)
+Rv=4.05
+keyword = "xgalsb"
+av = Rv * EBV_calzetti
+mag_ext_calzetti = calzetti00(pivots, av, Rv, unit="aa")
+ext_calzetti = ReddeningLaw.from_extinction_model(keyword).extinction_curve(EBV_calzetti)
+##print("Using extinction curve from %s with Rv = %.2f" % (extinction_curve, Rv))
+intrinsic_fluxes = remove(mag_ext_calzetti, remove(mag_ext_cardelli, fluxes)) # derreden the fluxes
+##derreden = ReddeningLaw.from_extinction_model(keyword).extinction_curve(-EBV)
+total_av = EBV_cardelli * 3.1 + EBV_calzetti * 4.05
+print("Total Av: %.2f" % total_av)
 
-if extinction_curve == "Cardelli":
-    Rv=3.1
-    keyword = "mwavg"
-    av = Rv * EBV
-    mag_ext = ccm89(pivots, av, Rv, unit="aa")
-
-elif extinction_curve=="Calzetti":
-    Rv=4.05
-    keyword = "xgalsb"
-    av = Rv * EBV
-    mag_ext = calzetti00(pivots, av, Rv, unit="aa")
-
-print("Using extinction curve from %s with Rv = %.2f" % (extinction_curve, Rv))
-
-intrinsic_fluxes = remove(mag_ext, fluxes) # derreden the fluxes
-ext = ReddeningLaw.from_extinction_model(keyword).extinction_curve(EBV)
-derreden = ReddeningLaw.from_extinction_model(keyword).extinction_curve(-EBV)
-
-
+# set the norm to the value with the lowest normalization as a starting point
+index_norm = np.argmin(uncertainties)
 if args.model=="powerlaw":
-    # set the norm to the value with the lowest normalization as a starting point
-    index_norm = np.argmin(uncertainties)
     # bracket alpha between two sensitive values
     model = PowerLawFlux1D(alpha=2, amplitude=intrinsic_fluxes[index_norm], x_0=pivots[index_norm],
                 bounds={"alpha":[0, 10], "amplitude":[1e-26, np.inf]}, fixed={"x_0": True})
@@ -185,12 +188,13 @@ elif args.model == "blackbody":
                         bounds={"temperature":[1000, 100000], "bolometric_flux":bolbounds})
     raise Exception("Blackbody model was never implemented due to unit problems with astropy and synphot")
 
+elif args.model == "constant":
+    model = ConstFlux1D(amplitude=intrinsic_fluxes[index_norm], bounds={"amplitude":[1e-26, np.inf]})
+
 print(model)
-
-
 nsims = args.nsims
 
-if len(fluxes)<=2:
+if len(fluxes)<2 and args.model=="powerlaw":
     # if there's only 2 fluxes, fix the normalization and only fit for the index of the powerlaw
     if "amplitude" in model.param_names:
         model.amplitude.fixed = True
@@ -207,14 +211,27 @@ for i in range(2):
         bounds_list[i].append(model.bounds[param_name][i])
 
 # pass the parameters
-result = least_squares(minimize_model, x0=[*varparams.values()], bounds=bounds_list)
+result = least_squares(minimize_model, x0=[*varparams.values()],
+                        jac="3-point", bounds=bounds_list, ftol=1e-13, xtol=1e-11)
+print(result)
 
 best_params = result.x
 print("Best-fit parameters minimizing count rate residuals:")
 print(best_params)
-# draw powerlaws from covariance
+
+# If one does not trust the input uncertainties sigma, one can still assume that the fit is good, to estimate the data uncertainties from the fit itself. This corresponds to assuming chi**2/DOF=1, where DOF is the number of degrees of freedom. In this case, one can use the following lines to rescale the covariance matrix before computing the uncertainties
 J = result.jac
-cov = np.linalg.inv(J.T.dot(J))
+nvarparams = len(varparamnames)
+dof =  len(rates) - nvarparams
+# the 2 comes because least_squares reduced 0.5 x residuals**2
+#sq = 2 * result.cost / dof
+#https://stackoverflow.com/questions/40187517/getting-covariance-matrix-of-fitted-parameters-from-scipy-optimize-least-squares
+# scale the covariance by the reduced chi square
+# https://stackoverflow.com/questions/14854339/in-scipy-how-and-why-does-curve-fit-calculate-the-covariance-of-the-parameter-es
+cov = np.linalg.inv(J.T.dot(J)) # * sq we don't multiply as we don't want to assume a goodness of 1 or some other weird shit
+print("Covariance matrix")
+print(cov)
+print("Drawing %d samples..." % nsims)
 samples = np.random.multivariate_normal(result.x, cov, size=nsims).T
 
 plt.figure()
@@ -233,7 +250,10 @@ sampled_fluxes = [ ]
 for sample_params in samples.T:
     param_dict = {name:value for name,value in zip(varparams.keys(), sample_params)}
     if "amplitude" in param_dict:
-        if (param_dict["amplitude"] < 0) or (param_dict["alpha"] <0):
+        if (param_dict["amplitude"] < 0):
+            continue
+    if "alpha" in param_dict:
+        if param_dict["alpha"] < 0:
             continue
     elif "bolometric_flux" in param_dict:
         if param_dict["bolometric_flux"] < 0:
@@ -274,8 +294,6 @@ for sample_params in samples.T:
 #        sampled_fluxes.append(new_flux_exp)
 print("Done\n")
 
-print(result)
-
 std = np.sqrt(np.diagonal(cov))
 plt.figure()
 
@@ -287,7 +305,7 @@ for wavelength, filter_fluxes in zip(pivots, np.array(sampled_fluxes).T):
 
     plt.xlabel("Intrinsic fluxes ($\lambda$ = %.1f)" % wavelength)
     plt.legend()
-    plt.savefig("%s/sampled_fluxes_%.2f_%.1f.png" % (outdir, std[-1], wavelength))
+    plt.savefig("%s/sampled_fluxes_%.1f.png" % (outdir,  wavelength))
 
 best_params_dict = {parname:param for parname, param in zip(varparamnames, best_params)}
 # add fixed parameters back
@@ -306,13 +324,20 @@ if "amplitude" in best_params_dict:
 sp = SourceSpectrum(model.__class__, **best_params_dict, z=z) # best-fit powerlaw
 
 # residual plot
-obs = [Observation(sp * ext, bp) for bp in bps]
+obs = [Observation(sp * ext_cardelli * ext_calzetti, bp, binset=bp.binset) for bp in bps]
 model_counts = [ob.countrate(area=stsyn.conf.area).value for ob in obs]
+
+plt.figure()
+plt.errorbar(pivots, rates, yerr=uncertainties, label="Observed count rates", fmt="+")
+plt.scatter(pivots, model_counts, label="Precited count rates")
+plt.legend()
+plt.xlabel("Wavelength ($\AA$)")
+plt.ylabel("F$_\lambda$ (erg/s/cm$^2$/$\AA$)")
+plt.savefig("%s/predicted_rates.png" % outdir)
+
 plt.figure()
 plt.errorbar(pivots, model_counts - rates, yerr=uncertainties, color="black")
 chi_square = np.sum(((model_counts - rates) / uncertainties)**2)
-nvarparams = len(varparamnames)
-dof =  len(rates) - nvarparams
 print("\nChi-square/dof = %.2f/%d\n" % (chi_square, dof))
 plt.xlabel("$\AA$")
 plt.axhline(y=0, ls="solid", color="black", zorder=-10, lw=1)
@@ -333,21 +358,19 @@ intrinsic_fluxes = sp(pivots).value
 # no the yerr are already calculated in the index of the powerlaw which we then convolve onto the uncertainties of the final sampled fluxes
 err_intrinsic_fluxes = np.std(sampled_fluxes, axis=0)
 # for few datapoints include the original uncertainty on the final estimation as we do not randomized the amplitude
-if len(fluxes)>2:
-    err_intrinsic_fluxes = np.std(sampled_fluxes, axis=0) #
-else:
+if len(fluxes)<2 and args.model=="powerlaw":
     err_intrinsic_fluxes = np.sqrt(err_intrinsic_fluxes**2 + yerr**2) #
 print("Pivot wavelengths (\AA)")
 print(pivots)
 
 for pivot, flux, err_intrin in zip(pivots, intrinsic_fluxes, err_intrinsic_fluxes):
-    print("Pivot:%.1f --> Derredened flux (1e-18 erg/cm2/AA/s): %.2f$pm$%.2f" %(pivot, flux * 1e18, err_intrin * 1e18))
+    print("Pivot:%.1f --> Derredened flux (1e-18 erg/cm2/AA/s): %.2f$pm$%.3f" %(pivot, flux * 1e18, err_intrin * 1e18))
 
 #plt.yscale("log")
 #plt.xscale("log")
 plt.figure()
 
-plot_x = np.arange(min(pivots), max(pivots), 100)
+plot_x = np.linspace(min(pivots) - 10, max(pivots) + 10, 100)
 
 for par in best_params_dict.keys():
     setattr(model, par, best_params_dict[par])
@@ -363,10 +386,12 @@ plt.plot(plot_x, model(plot_x), label=label, ls="--")
 plt.ylabel("F$_\lambda$ (erg/s/cm$^2$/$\AA$)")
 plt.xlabel("$\AA$")
 plt.errorbar(pivots, fluxes, yerr=yerr, fmt="o", label="Observed fluxes")
-plt.errorbar(pivots, intrinsic_fluxes, yerr=err_intrinsic_fluxes, fmt="o", label="Extinction-corrected (E(B-V) = %.2f) fluxes" % (EBV))
+plt.errorbar(pivots, intrinsic_fluxes, yerr=err_intrinsic_fluxes, fmt="o", label="Extinction-corrected (Av = %.2f) fluxes" % (total_av))
+plt.plot(plot_x, (sp * ext_cardelli * ext_calzetti)(plot_x), label='Av=%.2f' %total_av)
+plt.xscale("log")
+plt.yscale("log")
 plt.legend()
 plt.savefig("%s/minimized.png" % (outdir), dpi=100)
-
 
 print("Original ST magnitudes:")
 print(stmags)
@@ -385,7 +410,7 @@ old_stmag = ["%.2f$\pm$%.2f" %(stmag, err) for stmag, err in zip(stmags, errmags
 old_fluxes = ["%.2f$\pm$%.2f" %(flux/ scale, err/ scale) for flux, err in zip(fluxes, err)]
 # TODO: we should calculate new errors on new mags based on the new fluxes
 new_stmag = ["%.2f$\pm$%.2f" %(stmag, err) for stmag, err in zip(new_stmag, new_stmag_err)]
-intrinsic_fluxes_str = ["%.2f$\pm$%.3f" %(flux/ scale, err/ scale) for flux, err in zip(intrinsic_fluxes, err_intrinsic_fluxes)]
+intrinsic_fluxes_str = ["%.2f$\pm$%.2f" %(flux/ scale, err/ scale) for flux, err in zip(intrinsic_fluxes, err_intrinsic_fluxes)]
 outputs = np.vstack((dirs, pivots, old_stmag, old_fluxes, new_stmag, intrinsic_fluxes_str))
 np.savetxt("%s/results.dat" % outdir, outputs.T, header="directory\tpivots\tstmag\tfluxes(%.1e)\tnewstmag\tnewfluxes" % scale,
             delimiter=" & ", fmt="%s")#, header="#directory\tpivots\tfluxes\tstmag\tnewfluxes\tnewstmag", fmt="%s\t%.2f\t%s\t%s\t%s\t%s")
