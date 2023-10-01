@@ -48,7 +48,7 @@ def minimize_model(params):
     return countrates_residuals(rates, uncertainties, model_rates)
 
 
-def minimize_index(params):
+def minimize_index_todelete(params):
     index = params[0]
     sp = SourceSpectrum(PowerLawFlux1D, alpha=-index,
                         amplitude=1 * photflam_units,
@@ -417,7 +417,7 @@ np.savetxt("%s/results.dat" % outdir, outputs.T, header="directory\tpivots\tstma
 
 xspec_file = open("%s/to_xspec.txt" % outdir, "w+")
 
-for pivot_wavelength, flux, flux_error, bp in zip(pivots, intrinsic_fluxes, err, bps):
+for pivot_wavelength, flux, flux_error, bp in zip(pivots, intrinsic_fluxes, err_intrinsic_fluxes, bps):
     filter_bandwidth = bp.rectwidth().value # http://svo2.cab.inta-csic.es/theory/fps/index.php?id=HST/ACS_HRC.F555W&&mode=browse&gname=HST&gname2=ACS_HRC#filter
     xspec_file.write("%.1f %.2f %.3e %.3e\n" % (pivot_wavelength - filter_bandwidth / 2, pivot_wavelength + filter_bandwidth / 2, flux, flux_error))
 xspec_file.write("#ftflx2xsp infile=%s xunit=angstrom yunit=ergs/cm^2/s/A nspec=1 phafile=hst_%s.fits rspfile=hst_%s.rsp clobber=yes" % ("to_xspec.txt", args.outdir, args.outdir))
