@@ -38,13 +38,13 @@ def minimize_model(params):
 
     sp = SourceSpectrum(model.__class__, **param_dict, z=z) * ext_cardelli * ext_calzetti # extinguished model
 
-    obs = [Observation(sp , bp, binset=bp.binset) for bp in bps] # absorbed model
     if "amplitude" in model.fixed.keys():
         if model.fixed["amplitude"]:
             # if the amplitude is fixed, renormalize based on the new index
             sp = sp.normalize(rates[index_norm] * u.ct, bps[index_norm], area=stsyn.conf.area) # renormalize to match count rates
 
-    model_rates = [ob.countrate(area=stsyn.conf.area).value for ob in obs] # rates from absorbed model
+    model_rates = [Observation(sp, bp, binset=bp.binset).countrate(area=stsyn.conf.area).value for bp in bps] # absorbed model
+
     return countrates_residuals(rates, uncertainties, model_rates)
 
 
@@ -372,9 +372,6 @@ plt.figure()
 
 plot_x = np.linspace(min(pivots) - 10, max(pivots) + 10, 100)
 
-for par in best_params_dict.keys():
-    setattr(model, par, best_params_dict[par])
-
 if "alpha" in model.param_names:
     label = "Last best-fit ($\\alpha$ = %.2f+-%.3f)" %(best_params_dict["alpha"], std[-1])
 elif "temperature" in model.param_names:
@@ -382,7 +379,7 @@ elif "temperature" in model.param_names:
 else:
     label = None
 
-plt.plot(plot_x, model(plot_x), label=label, ls="--")
+plt.plot(plot_x, sp.model(plot_x), label=label, ls="--")
 plt.ylabel("F$_\lambda$ (erg/s/cm$^2$/$\AA$)")
 plt.xlabel("$\AA$")
 plt.errorbar(pivots, fluxes, yerr=yerr, fmt="o", label="Observed fluxes")
