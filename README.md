@@ -1,10 +1,11 @@
-You are welcome to use this scripts. They allow things such as correcting the astrometry of HST images, performing aperture correction as well as SED fitting with very basic functions (e.g. powerlaws). All scripts can be run from the terminal with the -h option to see the list of input parameters and their description.
+You are welcome to use this scripts. They allow things such as correcting the astrometry of HST images, performing aperture correction as well as SED fitting with very basic functions (e.g. a constant, a powerlaw). All scripts can be run from the terminal with the -h option to see the list of input parameters and their description.
 
-astro_corr.py --> will correct the WCS of the HST image
-aperture_photometry.py is meant to retrieve physical fluxes and magntiudes from point like sources
+astro_corr.py --> will correct the WCS of the HST image \\
+aperture_photometry.py --> To retrieve fluxes and magntiudes from point like sources using aperture photometry
 mast.py --> Downloads observations and creates a latex table with them
 aperture_correction.py --> Allows to determine the PSF aperture correction to infinity from stars in the field
 derive_fluxes.py --> Minimizes the difference between an absorbed powerlaw and the observed count rates
+derive_fluxes_bayesian.py --> Does a similar thing but allows to incorporate priors on the extinction and uses MCMC instead. 
 derive_fluxes_Yang2011.py --> Does a similar thing but following an approach similar to Yang et al. 2011
 
 
