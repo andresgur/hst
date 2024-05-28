@@ -10,7 +10,7 @@ derive_fluxes_Yang2011.py --> Does a similar thing but following an approach sim
 
 If these scripts are useful to you we would appreciate a citation for the papers these were developed.
 
-# Acknowledging
+## Acknowledging
 
 ```
 @ARTICLE{2024arXiv240514512G,
