@@ -279,7 +279,7 @@ for image_file in args.images:
             waves = np.array([pivot_wavelength])
             mag_ext = ccm89(waves, args.av[0], Rv, unit="aa")
             phot_source["der_flux"] = remove(mag_ext, phot_source[flux_header])
-            phot_source["der_flux_err"] = np.sqrt(remove(mag_ext, phot_source["flux_err"])**2 + (Av_gal_err * phot_source["flux_err"] * np.log(10) * 0.4)**2) # this follows from error propagation (flux * 10**(0.4 * extinction); dflux * 10**(0.4 * extinction)
+            phot_source["der_flux_err"] = np.sqrt(remove(mag_ext, phot_source["flux_err"])**2 + (Av_gal_err * phot_source["flux"] * np.log(10) * 0.4)**2) # this follows from error propagation (flux * 10**(0.4 * extinction); dflux * 10**(0.4 * extinction)
             phot_source['der_flux_err'].info.format = '%.2E'
             phot_source["int_der_flux"] = phot_source["der_flux"]  * rect_width.value
             phot_source["int_der_flux_err"] = phot_source["der_flux_err"]  * rect_width.value
